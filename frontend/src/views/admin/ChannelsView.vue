@@ -593,7 +593,7 @@ import { adminAPI } from '@/api/admin'
 import type { Channel, ChannelModelPricing, CreateChannelRequest, UpdateChannelRequest, AccountStatsPricingRule } from '@/api/admin/channels'
 import type { PricingFormEntry } from '@/components/admin/channel/types'
 import { mTokToPerToken, perTokenToMTok, apiIntervalsToForm, formIntervalsToAPI, findModelConflict, validateIntervals } from '@/components/admin/channel/types'
-import type { AdminGroup, GroupPlatform } from '@/types'
+import type { AccountPlatform, AdminGroup, GroupPlatform } from '@/types'
 import type { Column } from '@/components/common/types'
 import { platformTextClass, platformBadgeLightClass } from '@/utils/platformColors'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -903,7 +903,7 @@ const ruleAccountNameCache = ref<Record<number, string>>({})
 const ruleAccountSearchRunner = useKeyedDebouncedSearch<SimpleAccount[]>({
   delay: 300,
   search: async (keyword, { key, signal }) => {
-    const platform = key.split('-')[0]
+    const platform = key.split('-')[0] as AccountPlatform
     const res = await adminAPI.accounts.list(1, 20, { platform, search: keyword }, { signal })
     return res.items.map(a => ({ id: a.id, name: a.name, platform: a.platform }))
   },

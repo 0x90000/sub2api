@@ -22,14 +22,18 @@
               <Icon name="clock" size="sm" class="text-orange-500" />
               {{ t('admin.scheduledTests.schedule') }}
             </button>
-            <template v-if="account.type === 'oauth' || account.type === 'setup-token'">
-              <button @click="$emit('reauth', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-blue-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+            <template v-if="canRefreshAccount">
+              <button
+                v-if="account.type === 'oauth' || account.type === 'setup-token'"
+                @click="$emit('reauth', account); $emit('close')"
+                class="flex w-full items-center gap-2 px-4 py-2 text-sm text-blue-600 hover:bg-gray-100 dark:hover:bg-dark-700"
+              >
                 <Icon name="link" size="sm" />
                 {{ t('admin.accounts.reAuthorize') }}
               </button>
               <button @click="$emit('refresh-token', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-purple-600 hover:bg-gray-100 dark:hover:bg-dark-700">
                 <Icon name="refresh" size="sm" />
-                {{ t('admin.accounts.refreshToken') }}
+                {{ refreshActionLabel }}
               </button>
             </template>
             <button v-if="supportsPrivacy" @click="$emit('set-privacy', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 dark:hover:bg-dark-700">
@@ -79,9 +83,21 @@ const isTempUnschedulable = computed(() => props.account?.temp_unschedulable_unt
 const hasRecoverableState = computed(() => {
   return props.account?.status === 'error' || Boolean(isRateLimited.value) || Boolean(isOverloaded.value) || Boolean(isTempUnschedulable.value)
 })
+const canRefreshAccount = computed(() => {
+  return (
+    props.account?.type === 'oauth' ||
+    props.account?.type === 'setup-token' ||
+    props.account?.platform === 'windsurf'
+  )
+})
 const isAntigravityOAuth = computed(() => props.account?.platform === 'antigravity' && props.account?.type === 'oauth')
 const isOpenAIOAuth = computed(() => props.account?.platform === 'openai' && props.account?.type === 'oauth')
 const supportsPrivacy = computed(() => isAntigravityOAuth.value || isOpenAIOAuth.value)
+const refreshActionLabel = computed(() => (
+  props.account?.platform === 'windsurf'
+    ? t('admin.accounts.windsurf.refreshCatalog')
+    : t('admin.accounts.refreshToken')
+))
 const hasQuotaLimit = computed(() => {
   return (props.account?.type === 'apikey' || props.account?.type === 'bedrock') && (
     (props.account?.quota_limit ?? 0) > 0 ||

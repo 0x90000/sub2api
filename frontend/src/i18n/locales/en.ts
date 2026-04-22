@@ -2711,7 +2711,15 @@ export default {
         singleMode: 'Single Token',
         batchMode: 'Batch Import',
         batchHint: 'Paste one token per line. The backend will create one Windsurf account for each token.',
-        batchPlaceholder: 'ws-token-1\nws-token-2'
+        batchPlaceholder: 'ws-token-1\nws-token-2',
+        refreshCatalog: 'Refresh Credits / Models',
+        refreshCatalogSuccess: 'Windsurf credits and model catalog refreshed',
+        refreshCatalogFailed: 'Failed to refresh Windsurf credits and model catalog',
+        allowedModelsCount: '{count} models available',
+        plan: {
+          free: 'free',
+          pro: 'pro'
+        }
       },
       // OAuth flow
       oauth: {

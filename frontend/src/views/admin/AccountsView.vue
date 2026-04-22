@@ -837,7 +837,7 @@ const refreshAccountsIncrementally = async () => {
       pagination.page,
       pagination.page_size,
       toRaw(params) as {
-        platform?: string
+        platform?: AccountPlatform
         type?: string
         status?: string
         privacy_mode?: string
@@ -1334,8 +1334,19 @@ const handleRefresh = async (a: Account) => {
     const updated = await adminAPI.accounts.refreshCredentials(a.id)
     patchAccountInList(updated)
     enterAutoRefreshSilentWindow()
+    usageManualRefreshToken.value += 1
+    appStore.showSuccess(
+      a.platform === 'windsurf'
+        ? t('admin.accounts.windsurf.refreshCatalogSuccess')
+        : t('common.success')
+    )
   } catch (error) {
     console.error('Failed to refresh credentials:', error)
+    appStore.showError(
+      a.platform === 'windsurf'
+        ? t('admin.accounts.windsurf.refreshCatalogFailed')
+        : String(error)
+    )
   }
 }
 const handleRecoverState = async (a: Account) => {

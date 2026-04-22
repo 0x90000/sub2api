@@ -2854,7 +2854,15 @@ export default {
         singleMode: '单个导入',
         batchMode: '批量导入',
         batchHint: '每行填写一个 token，后端会为每个 token 创建一个 Windsurf 账号。',
-        batchPlaceholder: 'ws-token-1\nws-token-2'
+        batchPlaceholder: 'ws-token-1\nws-token-2',
+        refreshCatalog: '刷新额度/模型目录',
+        refreshCatalogSuccess: '已刷新 Windsurf 额度和模型目录',
+        refreshCatalogFailed: '刷新 Windsurf 额度和模型目录失败',
+        allowedModelsCount: '可用模型 {count} 个',
+        plan: {
+          free: 'free',
+          pro: 'pro'
+        }
       },
       // OAuth flow
       oauth: {

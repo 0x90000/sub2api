@@ -251,6 +251,12 @@ const loadingModels = ref(false)
 let abortController: AbortController | null = null
 const generatedImages = ref<PreviewImage[]>([])
 const prioritizedGeminiModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash']
+const windsurfFallbackModel: ClaudeModel = {
+  id: 'windsurf-probe',
+  type: 'model',
+  display_name: 'Windsurf Probe',
+  created_at: ''
+}
 const supportsGeminiImageTest = computed(() => {
   const modelID = selectedModelId.value.toLowerCase()
   if (!modelID.startsWith('gemini-') || !modelID.includes('-image')) return false
@@ -299,6 +305,9 @@ const loadAvailableModels = async () => {
     availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
       ? sortTestModels(models)
       : models
+    if (props.account.platform === 'windsurf' && availableModels.value.length === 0) {
+      availableModels.value = [windsurfFallbackModel]
+    }
     // Default selection by platform
     if (availableModels.value.length > 0) {
       if (props.account.platform === 'gemini') {

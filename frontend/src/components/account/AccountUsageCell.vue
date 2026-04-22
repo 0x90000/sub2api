@@ -374,6 +374,48 @@
   <div ref="rootRef" v-else>
     <!-- Gemini API Key accounts: show quota info -->
     <AccountQuotaInfo v-if="account.platform === 'gemini'" :account="account" />
+    <div v-else-if="account.platform === 'windsurf'" class="space-y-1">
+      <div v-if="todayStats" class="mb-0.5 flex items-center">
+        <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+            {{ formatKeyRequests }} req
+          </span>
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+            {{ formatKeyTokens }}
+          </span>
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800" :title="t('usage.accountBilled')">
+            A ${{ formatKeyCost }}
+          </span>
+          <span
+            v-if="todayStats.user_cost != null"
+            class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
+            :title="t('usage.userBilled')"
+          >
+            U ${{ formatKeyUserCost }}
+          </span>
+        </div>
+      </div>
+      <div v-else-if="todayStatsLoading" class="mb-0.5 flex items-center gap-1">
+        <div class="h-3 w-10 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        <div class="h-3 w-8 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        <div class="h-3 w-12 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+      </div>
+
+      <div v-if="windsurfHasSnapshot" class="space-y-1">
+        <div v-if="windsurfPlanLabel" class="flex items-center gap-1">
+          <span :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', windsurfPlanClass]">
+            {{ windsurfPlanLabel }}
+          </span>
+        </div>
+        <div v-if="windsurfCreditBalanceDisplay !== null" class="text-[10px] text-gray-500 dark:text-gray-400">
+          💳 {{ t('admin.accounts.aiCreditsBalance') }}: {{ windsurfCreditBalanceDisplay }}
+        </div>
+        <div v-if="windsurfAllowedModelsCount !== null" class="text-[10px] text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.windsurf.allowedModelsCount', { count: windsurfAllowedModelsCount }) }}
+        </div>
+      </div>
+      <div v-else-if="!todayStats && !todayStatsLoading" class="text-xs text-gray-400">-</div>
+    </div>
     <!-- Key/Bedrock accounts: show today stats + optional quota bars -->
     <div v-else class="space-y-1">
       <!-- Today stats row (requests, tokens, cost, user_cost) -->
@@ -442,7 +484,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
+import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats, WindsurfExtra } from '@/types'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
@@ -479,7 +521,9 @@ const error = ref<string | null>(null)
 const usageInfo = ref<AccountUsageInfo | null>(null)
 const rootRef = ref<HTMLElement | null>(null)
 const isDesktopViewport = ref(
-  typeof window === 'undefined' ? true : window.matchMedia(desktopViewportQuery).matches
+  typeof window === 'undefined' || typeof window.matchMedia !== 'function'
+    ? true
+    : window.matchMedia(desktopViewportQuery).matches
 )
 const hasEnteredViewport = ref(false)
 const pendingAutoLoad = ref(false)
@@ -966,7 +1010,11 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
   error.value = null
 
   try {
-    const fetchFn = () => adminAPI.accounts.getUsage(props.account.id, options?.source)
+    const fetchFn = () => (
+      options?.source
+        ? adminAPI.accounts.getUsage(props.account.id, options.source)
+        : adminAPI.accounts.getUsage(props.account.id)
+    )
     const result = await enqueueUsageRequest(props.account, fetchFn)
     if (!unmounted.value) {
       usageInfo.value = result
@@ -1130,8 +1178,44 @@ const formatKeyUserCost = computed(() => {
   return props.todayStats.user_cost.toFixed(2)
 })
 
+const windsurfExtra = computed(() => {
+  if (props.account.platform !== 'windsurf') return null
+  return (props.account.extra as WindsurfExtra | null | undefined) ?? null
+})
+
+const windsurfAllowedModelsCount = computed(() => {
+  const models = windsurfExtra.value?.allowed_models
+  return Array.isArray(models) ? models.filter(model => typeof model === 'string' && model.trim() !== '').length : null
+})
+
+const windsurfCreditBalanceDisplay = computed(() => {
+  const balance = windsurfExtra.value?.credit_balance
+  if (typeof balance !== 'number' || Number.isNaN(balance)) return null
+  return balance.toFixed(2)
+})
+
+const windsurfPlanLabel = computed(() => {
+  const tier = (windsurfExtra.value?.plan_tier || '').trim().toLowerCase()
+  if (tier === 'pro') return t('admin.accounts.windsurf.plan.pro')
+  if (tier === 'free') return t('admin.accounts.windsurf.plan.free')
+  return tier || null
+})
+
+const windsurfPlanClass = computed(() => {
+  const tier = (windsurfExtra.value?.plan_tier || '').trim().toLowerCase()
+  if (tier === 'pro') return 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300'
+  if (tier === 'free') return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+  return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+})
+
+const windsurfHasSnapshot = computed(() => (
+  windsurfPlanLabel.value !== null ||
+  windsurfCreditBalanceDisplay.value !== null ||
+  windsurfAllowedModelsCount.value !== null
+))
+
 onMounted(() => {
-  if (typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
     desktopViewportMediaQuery = window.matchMedia(desktopViewportQuery)
     isDesktopViewport.value = desktopViewportMediaQuery.matches
     desktopViewportListener = (event: MediaQueryListEvent) => {
@@ -1153,7 +1237,10 @@ watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
   if (!prevKey || nextKey === prevKey) return
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
 
-  requestAutoLoad()
+  _usageCache.delete(props.account.id)
+  loadUsage({ bypassCache: true }).catch((e) => {
+    console.error('Failed to refresh openai usage after account snapshot changed:', e)
+  })
 })
 
 watch(

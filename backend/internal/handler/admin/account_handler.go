@@ -11,6 +11,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1935,6 +1936,11 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
+	if account.IsWindsurf() {
+		response.Success(c, buildWindsurfAccountModels(account))
+		return
+	}
+
 	// Handle Gemini accounts
 	if account.IsGemini() {
 		// For OAuth accounts: return default Gemini models
@@ -2019,6 +2025,97 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	}
 
 	response.Success(c, models)
+}
+
+func buildWindsurfAccountModels(account *service.Account) []openai.Model {
+	if account == nil || !account.IsWindsurf() {
+		return nil
+	}
+
+	modelsByID := make(map[string]openai.Model)
+	allowedSet := make(map[string]struct{})
+	for _, modelID := range account.GetWindsurfAllowedModels() {
+		trimmed := strings.TrimSpace(modelID)
+		if trimmed == "" {
+			continue
+		}
+		allowedSet[trimmed] = struct{}{}
+	}
+
+	appendModel := func(modelID string) {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			return
+		}
+		if _, exists := modelsByID[modelID]; exists {
+			return
+		}
+
+		model := openai.Model{
+			ID:          modelID,
+			Object:      "model",
+			Type:        "model",
+			OwnedBy:     inferWindsurfModelProvider(modelID),
+			DisplayName: modelID,
+		}
+		if cfg, ok := account.GetWindsurfModelConfigByID(modelID); ok {
+			if strings.TrimSpace(cfg.DisplayName) != "" {
+				model.DisplayName = strings.TrimSpace(cfg.DisplayName)
+			}
+			if strings.TrimSpace(cfg.Provider) != "" {
+				model.OwnedBy = strings.TrimSpace(cfg.Provider)
+			}
+		}
+		modelsByID[modelID] = model
+	}
+
+	mapping := account.GetModelMapping()
+	if len(mapping) > 0 {
+		for requestedModel, upstreamModel := range mapping {
+			if strings.Contains(requestedModel, "*") {
+				continue
+			}
+			if len(allowedSet) > 0 {
+				if _, ok := allowedSet[strings.TrimSpace(upstreamModel)]; !ok {
+					continue
+				}
+			}
+			appendModel(requestedModel)
+		}
+	} else {
+		for modelID := range allowedSet {
+			appendModel(modelID)
+		}
+	}
+
+	models := make([]openai.Model, 0, len(modelsByID))
+	for _, model := range modelsByID {
+		models = append(models, model)
+	}
+	sort.Slice(models, func(i, j int) bool {
+		return models[i].ID < models[j].ID
+	})
+	return models
+}
+
+func inferWindsurfModelProvider(modelID string) string {
+	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	switch {
+	case strings.HasPrefix(normalized, "gpt"), strings.HasPrefix(normalized, "o1"), strings.HasPrefix(normalized, "o3"), strings.HasPrefix(normalized, "o4"):
+		return "openai"
+	case strings.HasPrefix(normalized, "claude"):
+		return "anthropic"
+	case strings.HasPrefix(normalized, "gemini"):
+		return "google"
+	case strings.HasPrefix(normalized, "grok"):
+		return "xai"
+	case strings.HasPrefix(normalized, "deepseek"):
+		return "deepseek"
+	case strings.HasPrefix(normalized, "swe"), strings.HasPrefix(normalized, "arena"), strings.HasPrefix(normalized, "windsurf"):
+		return "windsurf"
+	default:
+		return "unknown"
+	}
 }
 
 // SetPrivacy handles setting privacy for a single OpenAI/Antigravity OAuth account
