@@ -42,6 +42,7 @@ type dashboardSnapshotV2Filters struct {
 	AccountID   int64
 	GroupID     int64
 	Model       string
+	Platform    string
 	RequestType *int16
 	Stream      *bool
 	BillingType *int8
@@ -56,6 +57,7 @@ type dashboardSnapshotV2CacheKey struct {
 	AccountID         int64  `json:"account_id"`
 	GroupID           int64  `json:"group_id"`
 	Model             string `json:"model"`
+	Platform          string `json:"platform"`
 	RequestType       *int16 `json:"request_type"`
 	Stream            *bool  `json:"stream"`
 	BillingType       *int8  `json:"billing_type"`
@@ -101,6 +103,7 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		AccountID:         filters.AccountID,
 		GroupID:           filters.GroupID,
 		Model:             filters.Model,
+		Platform:          filters.Platform,
 		RequestType:       filters.RequestType,
 		Stream:            filters.Stream,
 		BillingType:       filters.BillingType,
@@ -181,6 +184,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.AccountID,
 			filters.GroupID,
 			filters.Model,
+			filters.Platform,
 			filters.RequestType,
 			filters.Stream,
 			filters.BillingType,
@@ -200,6 +204,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.APIKeyID,
 			filters.AccountID,
 			filters.GroupID,
+			filters.Platform,
 			usagestats.ModelSourceRequested,
 			filters.RequestType,
 			filters.Stream,
@@ -220,6 +225,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.APIKeyID,
 			filters.AccountID,
 			filters.GroupID,
+			filters.Platform,
 			filters.RequestType,
 			filters.Stream,
 			filters.BillingType,
@@ -243,7 +249,8 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 
 func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filters, error) {
 	filters := &dashboardSnapshotV2Filters{
-		Model: strings.TrimSpace(c.Query("model")),
+		Model:    strings.TrimSpace(c.Query("model")),
+		Platform: "",
 	}
 
 	if userIDStr := strings.TrimSpace(c.Query("user_id")); userIDStr != "" {
@@ -274,6 +281,11 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 		}
 		filters.GroupID = id
 	}
+	platform, ok := parseAdminUsagePlatform(c.Query("platform"))
+	if !ok {
+		return nil, errors.New("Invalid platform, use openai/anthropic/gemini/antigravity/windsurf")
+	}
+	filters.Platform = platform
 
 	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)

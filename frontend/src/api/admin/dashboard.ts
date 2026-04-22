@@ -13,6 +13,7 @@ import type {
   UserUsageTrendPoint,
   UserSpendingRankingResponse,
   UserBreakdownItem,
+  GroupPlatform,
   UsageRequestType
 } from '@/types'
 
@@ -53,6 +54,7 @@ export interface TrendParams {
   model?: string
   account_id?: number
   group_id?: number
+  platform?: GroupPlatform
   request_type?: UsageRequestType
   stream?: boolean
   billing_type?: number | null
@@ -84,6 +86,7 @@ export interface ModelStatsParams {
   model_source?: 'requested' | 'upstream' | 'mapping'
   account_id?: number
   group_id?: number
+  platform?: GroupPlatform
   request_type?: UsageRequestType
   stream?: boolean
   billing_type?: number | null
@@ -112,6 +115,7 @@ export interface GroupStatsParams {
   api_key_id?: number
   account_id?: number
   group_id?: number
+  platform?: GroupPlatform
   request_type?: UsageRequestType
   stream?: boolean
   billing_type?: number | null
@@ -162,6 +166,7 @@ export interface UserBreakdownParams {
   start_date?: string
   end_date?: string
   group_id?: number
+  platform?: GroupPlatform
   model?: string
   model_source?: 'requested' | 'upstream' | 'mapping'
   endpoint?: string

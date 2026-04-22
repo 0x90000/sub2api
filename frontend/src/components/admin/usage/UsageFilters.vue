@@ -78,6 +78,12 @@
           </div>
         </div>
 
+        <!-- Platform Filter -->
+        <div class="w-full sm:w-auto sm:min-w-[180px]">
+          <label class="input-label">{{ t('admin.groups.platform') }}</label>
+          <Select v-model="filters.platform" :options="platformOptions" @change="emitChange" />
+        </div>
+
         <!-- Model Filter -->
         <div class="w-full sm:w-auto sm:min-w-[220px]">
           <label class="input-label">{{ t('usage.model') }}</label>
@@ -221,9 +227,18 @@ const accountKeyword = ref('')
 const accountResults = ref<SimpleAccount[]>([])
 const showAccountDropdown = ref(false)
 let accountSearchTimeout: ReturnType<typeof setTimeout> | null = null
+let filterOptionsRequestSeq = 0
 
 const modelOptions = ref<SelectOption[]>([{ value: null, label: t('admin.usage.allModels') }])
 const groupOptions = ref<SelectOption[]>([{ value: null, label: t('admin.usage.allGroups') }])
+const platformOptions = ref<SelectOption[]>([
+  { value: null, label: t('admin.groups.allPlatforms') },
+  { value: 'openai', label: t('admin.groups.platforms.openai') },
+  { value: 'anthropic', label: t('admin.groups.platforms.anthropic') },
+  { value: 'gemini', label: t('admin.groups.platforms.gemini') },
+  { value: 'antigravity', label: t('admin.groups.platforms.antigravity') },
+  { value: 'windsurf', label: t('admin.groups.platforms.windsurf') }
+])
 
 const requestTypeOptions = ref<SelectOption[]>([
   { value: null, label: t('admin.usage.allTypes') },
@@ -328,7 +343,10 @@ const debounceAccountSearch = () => {
       return
     }
     try {
-      const res = await adminAPI.accounts.list(1, 20, { search: accountKeyword.value })
+      const res = await adminAPI.accounts.list(1, 20, {
+        search: accountKeyword.value,
+        platform: filters.value.platform,
+      })
       accountResults.value = res.items.map((a) => ({ id: a.id, name: a.name }))
     } catch {
       accountResults.value = []
@@ -421,13 +439,38 @@ watch(
 onMounted(async () => {
   document.addEventListener('click', onDocumentClick)
 
+  await loadFilterOptions()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', onDocumentClick)
+})
+
+const loadFilterOptions = async () => {
+  const requestSeq = ++filterOptionsRequestSeq
+  const currentPlatform = filters.value.platform
+
   try {
     const [gs, ms] = await Promise.all([
-      adminAPI.groups.list(1, 1000),
-      adminAPI.dashboard.getModelStats({ start_date: props.startDate, end_date: props.endDate })
+      adminAPI.groups.list(1, 1000, currentPlatform ? { platform: currentPlatform } : undefined),
+      adminAPI.dashboard.getModelStats({
+        start_date: props.startDate,
+        end_date: props.endDate,
+        platform: currentPlatform
+      })
     ])
 
-    groupOptions.value.push(...gs.items.map((g: any) => ({ value: g.id, label: g.name })))
+    if (requestSeq !== filterOptionsRequestSeq) {
+      return
+    }
+
+    groupOptions.value = [
+      { value: null, label: t('admin.usage.allGroups') },
+      ...gs.items.map((g: any) => ({ value: g.id, label: g.name }))
+    ]
+    if (filters.value.group_id != null && !gs.items.some((g: any) => g.id === filters.value.group_id)) {
+      filters.value.group_id = undefined
+    }
 
     const uniqueModels = new Set<string>()
     ms.models?.forEach((s: any) => {
@@ -435,17 +478,24 @@ onMounted(async () => {
         uniqueModels.add(s.model)
       }
     })
-    modelOptions.value.push(
+    modelOptions.value = [
+      { value: null, label: t('admin.usage.allModels') },
       ...Array.from(uniqueModels)
         .sort()
         .map((m) => ({ value: m, label: m }))
-    )
+    ]
+    if (filters.value.model && !uniqueModels.has(filters.value.model)) {
+      filters.value.model = undefined
+    }
   } catch {
     // Ignore filter option loading errors (page still usable)
   }
-})
+}
 
-onUnmounted(() => {
-  document.removeEventListener('click', onDocumentClick)
-})
+watch(
+  () => [props.startDate, props.endDate, filters.value.platform] as const,
+  () => {
+    void loadFilterOptions()
+  }
+)
 </script>

@@ -247,26 +247,40 @@ func (s *WindsurfGatewayService) CompleteChatCompletionsWithMetadata(
 	groupID *int64,
 	req *apicompat.ChatCompletionsRequest,
 ) (*apicompat.ChatCompletionsResponse, *WindsurfExecutionMetadata, error) {
-	if s == nil || s.chatBridge == nil {
-		return nil, nil, ErrWindsurfChatBridgeUnavailable
-	}
-	if req == nil || strings.TrimSpace(req.Model) == "" {
+	if req == nil {
 		return nil, nil, ErrWindsurfModelNotSupported
 	}
-
-	startedAt := time.Now()
 	selection, err := s.SelectChatCompletionAccount(ctx, groupID, req.Model)
 	if err != nil {
 		return nil, nil, err
 	}
+	return s.completeChatCompletionsWithSelection(ctx, req.Model, req, selection)
+}
 
+func (s *WindsurfGatewayService) completeChatCompletionsWithSelection(
+	ctx context.Context,
+	requestedModel string,
+	req *apicompat.ChatCompletionsRequest,
+	selection *WindsurfAccountSelection,
+) (*apicompat.ChatCompletionsResponse, *WindsurfExecutionMetadata, error) {
+	if s == nil || s.chatBridge == nil {
+		return nil, nil, ErrWindsurfChatBridgeUnavailable
+	}
+	if req == nil || strings.TrimSpace(requestedModel) == "" {
+		return nil, nil, ErrWindsurfModelNotSupported
+	}
+	if selection == nil || selection.Account == nil {
+		return nil, nil, ErrWindsurfNoSchedulableAccounts
+	}
+
+	startedAt := time.Now()
 	result, err := s.chatBridge.Complete(ctx, selection.Account, selection.Model, req)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	metadata := &WindsurfExecutionMetadata{
-		RequestedModel: req.Model,
+		RequestedModel: requestedModel,
 		UpstreamModel:  selection.Model.UpstreamModel,
 		Duration:       time.Since(startedAt),
 		Stream:         false,
@@ -276,7 +290,7 @@ func (s *WindsurfGatewayService) CompleteChatCompletionsWithMetadata(
 		metadata.RequestID = strings.TrimSpace(result.RequestID)
 		metadata.Usage = result.Usage
 	}
-	return buildWindsurfChatCompletionResponse(req.Model, result), metadata, nil
+	return buildWindsurfChatCompletionResponse(requestedModel, result), metadata, nil
 }
 
 func (s *WindsurfGatewayService) StreamChatCompletions(
@@ -295,22 +309,37 @@ func (s *WindsurfGatewayService) StreamChatCompletionsWithMetadata(
 	req *apicompat.ChatCompletionsRequest,
 	emit func(apicompat.ChatCompletionsChunk) error,
 ) (*WindsurfExecutionMetadata, error) {
+	if req == nil {
+		return nil, ErrWindsurfModelNotSupported
+	}
+	selection, err := s.SelectChatCompletionAccount(ctx, groupID, req.Model)
+	if err != nil {
+		return nil, err
+	}
+	return s.streamChatCompletionsWithSelection(ctx, req.Model, req, selection, emit)
+}
+
+func (s *WindsurfGatewayService) streamChatCompletionsWithSelection(
+	ctx context.Context,
+	requestedModel string,
+	req *apicompat.ChatCompletionsRequest,
+	selection *WindsurfAccountSelection,
+	emit func(apicompat.ChatCompletionsChunk) error,
+) (*WindsurfExecutionMetadata, error) {
 	if s == nil || s.chatBridge == nil {
 		return nil, ErrWindsurfChatBridgeUnavailable
 	}
-	if req == nil || strings.TrimSpace(req.Model) == "" {
+	if req == nil || strings.TrimSpace(requestedModel) == "" {
 		return nil, ErrWindsurfModelNotSupported
+	}
+	if selection == nil || selection.Account == nil {
+		return nil, ErrWindsurfNoSchedulableAccounts
 	}
 	if emit == nil {
 		return nil, errors.New("windsurf stream emit callback is required")
 	}
 
 	startedAt := time.Now()
-	selection, err := s.SelectChatCompletionAccount(ctx, groupID, req.Model)
-	if err != nil {
-		return nil, err
-	}
-
 	streamID := newWindsurfChatCompletionID()
 	createdAt := time.Now().Unix()
 	sentRole := false
@@ -324,7 +353,7 @@ func (s *WindsurfGatewayService) StreamChatCompletionsWithMetadata(
 			ID:      streamID,
 			Object:  "chat.completion.chunk",
 			Created: createdAt,
-			Model:   req.Model,
+			Model:   requestedModel,
 			Choices: []apicompat.ChatChunkChoice{{
 				Index: 0,
 				Delta: apicompat.ChatDelta{
@@ -346,7 +375,7 @@ func (s *WindsurfGatewayService) StreamChatCompletionsWithMetadata(
 			ID:      streamID,
 			Object:  "chat.completion.chunk",
 			Created: createdAt,
-			Model:   req.Model,
+			Model:   requestedModel,
 			Choices: []apicompat.ChatChunkChoice{{
 				Index: 0,
 				Delta: apicompat.ChatDelta{
@@ -368,7 +397,7 @@ func (s *WindsurfGatewayService) StreamChatCompletionsWithMetadata(
 			ID:      streamID,
 			Object:  "chat.completion.chunk",
 			Created: createdAt,
-			Model:   req.Model,
+			Model:   requestedModel,
 			Choices: []apicompat.ChatChunkChoice{{
 				Index: 0,
 				Delta: apicompat.ChatDelta{
@@ -406,7 +435,7 @@ func (s *WindsurfGatewayService) StreamChatCompletionsWithMetadata(
 		ID:      streamID,
 		Object:  "chat.completion.chunk",
 		Created: createdAt,
-		Model:   req.Model,
+		Model:   requestedModel,
 		Choices: []apicompat.ChatChunkChoice{{
 			Index:        0,
 			Delta:        apicompat.ChatDelta{},
@@ -417,7 +446,7 @@ func (s *WindsurfGatewayService) StreamChatCompletionsWithMetadata(
 	}
 
 	metadata := &WindsurfExecutionMetadata{
-		RequestedModel: req.Model,
+		RequestedModel: requestedModel,
 		UpstreamModel:  selection.Model.UpstreamModel,
 		Duration:       time.Since(startedAt),
 		Stream:         true,
@@ -444,11 +473,26 @@ func (s *WindsurfGatewayService) CompleteMessagesWithMetadata(
 	groupID *int64,
 	req *apicompat.AnthropicRequest,
 ) (*apicompat.AnthropicResponse, *WindsurfExecutionMetadata, error) {
+	if req == nil {
+		return nil, nil, ErrWindsurfModelNotSupported
+	}
+	selection, err := s.SelectChatCompletionAccount(ctx, groupID, req.Model)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s.completeMessagesWithSelection(ctx, req, selection)
+}
+
+func (s *WindsurfGatewayService) completeMessagesWithSelection(
+	ctx context.Context,
+	req *apicompat.AnthropicRequest,
+	selection *WindsurfAccountSelection,
+) (*apicompat.AnthropicResponse, *WindsurfExecutionMetadata, error) {
 	chatReq, err := convertWindsurfAnthropicToChatRequest(req)
 	if err != nil {
 		return nil, nil, err
 	}
-	chatResp, metadata, err := s.CompleteChatCompletionsWithMetadata(ctx, groupID, chatReq)
+	chatResp, metadata, err := s.completeChatCompletionsWithSelection(ctx, req.Model, chatReq, selection)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -474,6 +518,22 @@ func (s *WindsurfGatewayService) StreamMessagesWithMetadata(
 	req *apicompat.AnthropicRequest,
 	emit func(apicompat.AnthropicStreamEvent) error,
 ) (*WindsurfExecutionMetadata, error) {
+	if req == nil {
+		return nil, ErrWindsurfModelNotSupported
+	}
+	selection, err := s.SelectChatCompletionAccount(ctx, groupID, req.Model)
+	if err != nil {
+		return nil, err
+	}
+	return s.streamMessagesWithSelection(ctx, req, selection, emit)
+}
+
+func (s *WindsurfGatewayService) streamMessagesWithSelection(
+	ctx context.Context,
+	req *apicompat.AnthropicRequest,
+	selection *WindsurfAccountSelection,
+	emit func(apicompat.AnthropicStreamEvent) error,
+) (*WindsurfExecutionMetadata, error) {
 	if emit == nil {
 		return nil, errors.New("windsurf anthropic stream emit callback is required")
 	}
@@ -483,22 +543,27 @@ func (s *WindsurfGatewayService) StreamMessagesWithMetadata(
 	}
 
 	streamID := newWindsurfAnthropicMessageID()
-	start := &apicompat.AnthropicResponse{
-		ID:         streamID,
-		Type:       "message",
-		Role:       "assistant",
-		Model:      req.Model,
-		StopReason: "",
-		Usage: apicompat.AnthropicUsage{
-			InputTokens:  0,
-			OutputTokens: 0,
-		},
-	}
-	if err := emit(apicompat.AnthropicStreamEvent{
-		Type:    "message_start",
-		Message: start,
-	}); err != nil {
-		return nil, err
+	started := false
+	emitStart := func() error {
+		if started {
+			return nil
+		}
+		started = true
+		start := &apicompat.AnthropicResponse{
+			ID:         streamID,
+			Type:       "message",
+			Role:       "assistant",
+			Model:      req.Model,
+			StopReason: "",
+			Usage: apicompat.AnthropicUsage{
+				InputTokens:  0,
+				OutputTokens: 0,
+			},
+		}
+		return emit(apicompat.AnthropicStreamEvent{
+			Type:    "message_start",
+			Message: start,
+		})
 	}
 
 	type streamState struct {
@@ -508,6 +573,9 @@ func (s *WindsurfGatewayService) StreamMessagesWithMetadata(
 	state := &streamState{}
 
 	openReasoning := func() error {
+		if err := emitStart(); err != nil {
+			return err
+		}
 		if state.reasoningIndex != nil {
 			return nil
 		}
@@ -523,6 +591,9 @@ func (s *WindsurfGatewayService) StreamMessagesWithMetadata(
 	}
 
 	openText := func() error {
+		if err := emitStart(); err != nil {
+			return err
+		}
 		if state.textIndex != nil {
 			return nil
 		}
@@ -540,7 +611,7 @@ func (s *WindsurfGatewayService) StreamMessagesWithMetadata(
 		})
 	}
 
-	metadata, err := s.StreamChatCompletionsWithMetadata(ctx, groupID, chatReq, func(chunk apicompat.ChatCompletionsChunk) error {
+	metadata, err := s.streamChatCompletionsWithSelection(ctx, req.Model, chatReq, selection, func(chunk apicompat.ChatCompletionsChunk) error {
 		if len(chunk.Choices) == 0 {
 			return nil
 		}
@@ -594,6 +665,9 @@ func (s *WindsurfGatewayService) StreamMessagesWithMetadata(
 		}
 	}
 
+	if err := emitStart(); err != nil {
+		return nil, err
+	}
 	if err := emit(apicompat.AnthropicStreamEvent{
 		Type: "message_delta",
 		Delta: &apicompat.AnthropicDelta{
@@ -763,6 +837,18 @@ func (s *WindsurfGatewayService) SelectChatCompletionAccount(
 	groupID *int64,
 	requestedModel string,
 ) (*WindsurfAccountSelection, error) {
+	candidates, err := s.listChatCompletionAccountSelections(ctx, groupID, requestedModel)
+	if err != nil {
+		return nil, err
+	}
+	return &candidates[0], nil
+}
+
+func (s *WindsurfGatewayService) listChatCompletionAccountSelections(
+	ctx context.Context,
+	groupID *int64,
+	requestedModel string,
+) ([]WindsurfAccountSelection, error) {
 	if s == nil || s.accountRepo == nil {
 		return nil, ErrWindsurfNoSchedulableAccounts
 	}
@@ -784,6 +870,7 @@ func (s *WindsurfGatewayService) SelectChatCompletionAccount(
 	}
 
 	var lastModelErr error
+	candidates := make([]WindsurfAccountSelection, 0, len(accounts))
 	for i := range accounts {
 		account := &accounts[i]
 		resolved, err := resolveWindsurfAccountModel(account, requestedModel)
@@ -791,10 +878,14 @@ func (s *WindsurfGatewayService) SelectChatCompletionAccount(
 			lastModelErr = err
 			continue
 		}
-		return &WindsurfAccountSelection{
+		candidates = append(candidates, WindsurfAccountSelection{
 			Account: account,
 			Model:   resolved,
-		}, nil
+		})
+	}
+
+	if len(candidates) > 0 {
+		return candidates, nil
 	}
 
 	if lastModelErr != nil {

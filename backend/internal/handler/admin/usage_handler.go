@@ -27,6 +27,18 @@ type UsageHandler struct {
 	cleanupService *service.UsageCleanupService
 }
 
+func parseAdminUsagePlatform(raw string) (string, bool) {
+	platform := strings.ToLower(strings.TrimSpace(raw))
+	switch platform {
+	case "":
+		return "", true
+	case service.PlatformOpenAI, service.PlatformAnthropic, service.PlatformGemini, service.PlatformAntigravity, service.PlatformWindsurf:
+		return platform, true
+	default:
+		return "", false
+	}
+}
+
 // NewUsageHandler creates a new admin usage handler
 func NewUsageHandler(
 	usageService *service.UsageService,
@@ -110,6 +122,11 @@ func (h *UsageHandler) List(c *gin.Context) {
 	}
 
 	model := c.Query("model")
+	platform, ok := parseAdminUsagePlatform(c.Query("platform"))
+	if !ok {
+		response.BadRequest(c, "Invalid platform, use openai/anthropic/gemini/antigravity/windsurf")
+		return
+	}
 	billingMode := strings.TrimSpace(c.Query("billing_mode"))
 
 	var requestType *int16
@@ -176,6 +193,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 		APIKeyID:    apiKeyID,
 		AccountID:   accountID,
 		GroupID:     groupID,
+		Platform:    platform,
 		Model:       model,
 		RequestType: requestType,
 		Stream:      stream,
@@ -241,6 +259,11 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 	}
 
 	model := c.Query("model")
+	platform, ok := parseAdminUsagePlatform(c.Query("platform"))
+	if !ok {
+		response.BadRequest(c, "Invalid platform, use openai/anthropic/gemini/antigravity/windsurf")
+		return
+	}
 	billingMode := strings.TrimSpace(c.Query("billing_mode"))
 
 	var requestType *int16
@@ -316,6 +339,7 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		APIKeyID:    apiKeyID,
 		AccountID:   accountID,
 		GroupID:     groupID,
+		Platform:    platform,
 		Model:       model,
 		RequestType: requestType,
 		Stream:      stream,

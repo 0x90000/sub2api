@@ -197,6 +197,7 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 	// Parse optional filter params
 	var userID, apiKeyID, accountID, groupID int64
 	var model string
+	var platform string
 	var requestType *int16
 	var stream *bool
 	var billingType *int8
@@ -224,6 +225,12 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 	if modelStr := c.Query("model"); modelStr != "" {
 		model = modelStr
 	}
+	parsedPlatform, ok := parseAdminUsagePlatform(c.Query("platform"))
+	if !ok {
+		response.BadRequest(c, "Invalid platform, use openai/anthropic/gemini/antigravity/windsurf")
+		return
+	}
+	platform = parsedPlatform
 	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
 		if err != nil {
@@ -250,7 +257,7 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 		}
 	}
 
-	trend, hit, err := h.getUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
+	trend, hit, err := h.getUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, platform, requestType, stream, billingType)
 	if err != nil {
 		response.Error(c, 500, "Failed to get usage trend")
 		return
@@ -274,6 +281,7 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 	// Parse optional filter params
 	var userID, apiKeyID, accountID, groupID int64
 	modelSource := usagestats.ModelSourceRequested
+	var platform string
 	var requestType *int16
 	var stream *bool
 	var billingType *int8
@@ -305,6 +313,12 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 		}
 		modelSource = rawModelSource
 	}
+	parsedPlatform, ok := parseAdminUsagePlatform(c.Query("platform"))
+	if !ok {
+		response.BadRequest(c, "Invalid platform, use openai/anthropic/gemini/antigravity/windsurf")
+		return
+	}
+	platform = parsedPlatform
 	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
 		if err != nil {
@@ -331,7 +345,7 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 		}
 	}
 
-	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, modelSource, requestType, stream, billingType)
+	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, platform, modelSource, requestType, stream, billingType)
 	if err != nil {
 		response.Error(c, 500, "Failed to get model statistics")
 		return
@@ -352,6 +366,7 @@ func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
 	startTime, endTime := parseTimeRange(c)
 
 	var userID, apiKeyID, accountID, groupID int64
+	var platform string
 	var requestType *int16
 	var stream *bool
 	var billingType *int8
@@ -376,6 +391,12 @@ func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
 			groupID = id
 		}
 	}
+	parsedPlatform, ok := parseAdminUsagePlatform(c.Query("platform"))
+	if !ok {
+		response.BadRequest(c, "Invalid platform, use openai/anthropic/gemini/antigravity/windsurf")
+		return
+	}
+	platform = parsedPlatform
 	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
 		if err != nil {
@@ -402,7 +423,7 @@ func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
 		}
 	}
 
-	stats, hit, err := h.getGroupStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
+	stats, hit, err := h.getGroupStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, platform, requestType, stream, billingType)
 	if err != nil {
 		response.Error(c, 500, "Failed to get group statistics")
 		return
@@ -626,6 +647,12 @@ func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 			dim.GroupID = id
 		}
 	}
+	platform, ok := parseAdminUsagePlatform(c.Query("platform"))
+	if !ok {
+		response.BadRequest(c, "Invalid platform, use openai/anthropic/gemini/antigravity/windsurf")
+		return
+	}
+	dim.Platform = platform
 	dim.Model = c.Query("model")
 	rawModelSource := strings.TrimSpace(c.DefaultQuery("model_source", usagestats.ModelSourceRequested))
 	if !usagestats.IsValidModelSource(rawModelSource) {

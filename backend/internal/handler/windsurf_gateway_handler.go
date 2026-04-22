@@ -105,7 +105,85 @@ func (h *WindsurfGatewayHandler) Messages(c *gin.Context) {
 }
 
 func (h *WindsurfGatewayHandler) Responses(c *gin.Context) {
-	h.notImplemented(c)
+	if h == nil || h.service == nil {
+		h.writeResponsesShapeError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
+		return
+	}
+
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		h.writeResponsesShapeError(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		return
+	}
+	if len(body) == 0 {
+		h.writeResponsesShapeError(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
+		return
+	}
+	if !gjson.ValidBytes(body) {
+		h.writeResponsesShapeError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return
+	}
+	if model := gjson.GetBytes(body, "model"); !model.Exists() || model.Type != gjson.String || model.String() == "" {
+		h.writeResponsesShapeError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+
+	var req apicompat.ResponsesRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		h.writeResponsesShapeError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return
+	}
+
+	apiKey, _ := middleware2.GetAPIKeyFromContext(c)
+	var groupID *int64
+	if apiKey != nil && apiKey.Group != nil {
+		groupID = &apiKey.Group.ID
+	}
+
+	if req.Stream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(http.StatusOK)
+
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			h.writeResponsesShapeError(c, http.StatusInternalServerError, "api_error", "Streaming is not supported by this server")
+			return
+		}
+
+		metadata, err := h.service.StreamResponsesWithMetadata(c.Request.Context(), groupID, &req, func(event apicompat.ResponsesStreamEvent) error {
+			sse, err := apicompat.ResponsesEventToSSE(event)
+			if err != nil {
+				return err
+			}
+			if _, err := c.Writer.WriteString(sse); err != nil {
+				return err
+			}
+			flusher.Flush()
+			return nil
+		})
+		if err != nil {
+			if !c.Writer.Written() {
+				h.writeResponsesError(c, err)
+			}
+			return
+		}
+		_ = h.recordUsage(c, metadata, "/v1/responses", "/windsurf/cascade")
+		return
+	}
+
+	resp, metadata, err := h.service.CompleteResponsesWithMetadata(c.Request.Context(), groupID, &req)
+	if err != nil {
+		h.writeResponsesError(c, err)
+		return
+	}
+	if err := h.recordUsage(c, metadata, "/v1/responses", "/windsurf/cascade"); err != nil {
+		h.writeResponsesError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *WindsurfGatewayHandler) ResponsesWebSocket(c *gin.Context) {
@@ -249,6 +327,24 @@ func (h *WindsurfGatewayHandler) writeOpenAIShapeError(c *gin.Context, status in
 	c.JSON(status, gin.H{
 		"error": gin.H{
 			"type":    errType,
+			"message": message,
+		},
+	})
+}
+
+func (h *WindsurfGatewayHandler) writeResponsesError(c *gin.Context, err error) {
+	if h != nil && h.service != nil && h.service.ErrorMapper() != nil {
+		status, code, message := h.service.ErrorMapper().MapResponsesError(err)
+		h.writeResponsesShapeError(c, status, code, message)
+		return
+	}
+	h.writeResponsesShapeError(c, http.StatusBadGateway, "upstream_error", "Windsurf upstream request failed")
+}
+
+func (h *WindsurfGatewayHandler) writeResponsesShapeError(c *gin.Context, status int, code, message string) {
+	c.JSON(status, gin.H{
+		"error": gin.H{
+			"code":    code,
 			"message": message,
 		},
 	})

@@ -138,6 +138,7 @@ func TestWindsurfChatCompletions_StreamResponseUsesBridgeChunks(t *testing.T) {
 type windsurfChatBridgeStub struct {
 	completeResult *WindsurfBridgeResult
 	streamChunks   []WindsurfBridgeStreamChunk
+	streamResult   *WindsurfBridgeResult
 	completeModel  WindsurfResolvedModel
 	streamModel    WindsurfResolvedModel
 }
@@ -165,5 +166,5 @@ func (s *windsurfChatBridgeStub) Stream(
 			return nil, err
 		}
 	}
-	return nil, nil
+	return s.streamResult, nil
 }

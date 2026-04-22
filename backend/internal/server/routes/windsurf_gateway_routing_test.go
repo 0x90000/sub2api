@@ -52,11 +52,11 @@ func TestWindsurfGatewayRouting(t *testing.T) {
 	router.ServeHTTP(messagesResp, messagesReq)
 	require.NotEqual(t, http.StatusNotFound, messagesResp.Code, "path=%s should be routed to windsurf handler", "/v1/messages")
 
-	responsesReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"windsurf-test"}`))
+	responsesReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	responsesReq.Header.Set("Content-Type", "application/json")
 	responsesResp := httptest.NewRecorder()
 	router.ServeHTTP(responsesResp, responsesReq)
-	require.Equal(t, http.StatusNotImplemented, responsesResp.Code, "path=%s should hit windsurf placeholder handler", "/v1/responses")
+	require.Equal(t, http.StatusBadRequest, responsesResp.Code, "path=%s should hit windsurf responses handler", "/v1/responses")
 
 	chatReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"windsurf-test"}`))
 	chatReq.Header.Set("Content-Type", "application/json")

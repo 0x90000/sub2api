@@ -1439,6 +1439,7 @@ export interface UsageQueryParams {
   user_id?: number
   account_id?: number
   group_id?: number
+  platform?: GroupPlatform
   model?: string
   request_type?: UsageRequestType
   stream?: boolean

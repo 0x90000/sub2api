@@ -25,3 +25,16 @@ func (m *WindsurfErrorMapper) MapChatCompletionsError(err error) (status int, er
 		return http.StatusBadGateway, "upstream_error", "Windsurf upstream request failed"
 	}
 }
+
+func (m *WindsurfErrorMapper) MapResponsesError(err error) (status int, code string, message string) {
+	switch {
+	case errors.Is(err, ErrWindsurfChatBridgeUnavailable):
+		return http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable"
+	case errors.Is(err, ErrWindsurfModelNotSupported):
+		return http.StatusBadRequest, "invalid_request_error", "Requested model is not available for Windsurf"
+	case errors.Is(err, ErrWindsurfNoSchedulableAccounts):
+		return http.StatusServiceUnavailable, "api_error", "No available Windsurf accounts"
+	default:
+		return http.StatusBadGateway, "upstream_error", "Windsurf upstream request failed"
+	}
+}
