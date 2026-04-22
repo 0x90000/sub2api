@@ -481,6 +481,7 @@ type adminServiceImpl struct {
 	defaultSubAssigner   DefaultSubscriptionAssigner
 	userSubRepo          UserSubscriptionRepository
 	privacyClientFactory PrivacyClientFactory
+	windsurfAccountProbe *WindsurfAccountProbeService
 }
 
 type userGroupRateBatchReader interface {
@@ -505,6 +506,7 @@ func NewAdminService(
 	defaultSubAssigner DefaultSubscriptionAssigner,
 	userSubRepo UserSubscriptionRepository,
 	privacyClientFactory PrivacyClientFactory,
+	windsurfAccountProbe *WindsurfAccountProbeService,
 ) AdminService {
 	return &adminServiceImpl{
 		userRepo:             userRepo,
@@ -523,6 +525,7 @@ func NewAdminService(
 		defaultSubAssigner:   defaultSubAssigner,
 		userSubRepo:          userSubRepo,
 		privacyClientFactory: privacyClientFactory,
+		windsurfAccountProbe: windsurfAccountProbe,
 	}
 }
 
@@ -2175,7 +2178,14 @@ func (s *adminServiceImpl) RefreshAccountCredentials(ctx context.Context, id int
 	if err != nil {
 		return nil, err
 	}
-	// TODO: Implement refresh logic
+
+	if account.IsWindsurf() {
+		if s.windsurfAccountProbe == nil {
+			return nil, fmt.Errorf("windsurf account probe service not configured")
+		}
+		return s.windsurfAccountProbe.ProbeAndPersist(ctx, id)
+	}
+
 	return account, nil
 }
 

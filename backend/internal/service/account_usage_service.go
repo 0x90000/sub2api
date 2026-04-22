@@ -317,6 +317,14 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64) (*U
 		return usage, err
 	}
 
+	if account.IsWindsurf() {
+		usage, err := s.getWindsurfUsage(account)
+		if err == nil {
+			s.tryClearRecoverableAccountError(ctx, account)
+		}
+		return usage, err
+	}
+
 	// Antigravity 平台：使用 AntigravityQuotaFetcher 获取额度
 	if account.Platform == PlatformAntigravity {
 		usage, err := s.getAntigravityUsage(ctx, account)
@@ -1049,6 +1057,74 @@ func windowStatsFromAccountStats(stats *usagestats.AccountStats) *WindowStats {
 		StandardCost: stats.StandardCost,
 		UserCost:     stats.UserCost,
 	}
+}
+
+func (s *AccountUsageService) getWindsurfUsage(account *Account) (*UsageInfo, error) {
+	now := time.Now().UTC()
+	usage := &UsageInfo{Source: "passive"}
+
+	if updatedAtRaw := account.GetExtraString("usage_updated_at"); updatedAtRaw != "" {
+		if updatedAt, err := parseTime(updatedAtRaw); err == nil {
+			usage.UpdatedAt = &updatedAt
+		}
+	}
+	if usage.UpdatedAt == nil {
+		usage.UpdatedAt = &now
+	}
+
+	if maxMessages := parseExtraInt(account.Extra["max_messages"]); maxMessages > 0 {
+		messagesRemaining := parseExtraInt(account.Extra["messages_remaining"])
+		usedMessages := maxMessages - messagesRemaining
+		if usedMessages < 0 {
+			usedMessages = 0
+		}
+
+		progress := &UsageProgress{
+			Utilization:   (float64(usedMessages) / float64(maxMessages)) * 100,
+			UsedRequests:  int64(usedMessages),
+			LimitRequests: int64(maxMessages),
+		}
+		if resetAtRaw := account.GetExtraString("rate_limit_reset_at"); resetAtRaw != "" {
+			if resetAt, err := parseTime(resetAtRaw); err == nil {
+				progress.ResetsAt = &resetAt
+				progress.RemainingSeconds = int(time.Until(resetAt).Seconds())
+				if progress.RemainingSeconds < 0 {
+					progress.RemainingSeconds = 0
+				}
+			}
+		}
+		usage.FiveHour = progress
+	} else if _, ok := account.Extra["daily_remaining_percent"]; ok {
+		remaining := parseExtraFloat64(account.Extra["daily_remaining_percent"])
+		progress := &UsageProgress{Utilization: 100 - remaining}
+		if resetAtRaw := account.GetExtraString("daily_reset_at"); resetAtRaw != "" {
+			if resetAt, err := parseTime(resetAtRaw); err == nil {
+				progress.ResetsAt = &resetAt
+				progress.RemainingSeconds = int(time.Until(resetAt).Seconds())
+				if progress.RemainingSeconds < 0 {
+					progress.RemainingSeconds = 0
+				}
+			}
+		}
+		usage.FiveHour = progress
+	}
+
+	if _, ok := account.Extra["weekly_remaining_percent"]; ok {
+		remaining := parseExtraFloat64(account.Extra["weekly_remaining_percent"])
+		progress := &UsageProgress{Utilization: 100 - remaining}
+		if resetAtRaw := account.GetExtraString("weekly_reset_at"); resetAtRaw != "" {
+			if resetAt, err := parseTime(resetAtRaw); err == nil {
+				progress.ResetsAt = &resetAt
+				progress.RemainingSeconds = int(time.Until(resetAt).Seconds())
+				if progress.RemainingSeconds < 0 {
+					progress.RemainingSeconds = 0
+				}
+			}
+		}
+		usage.SevenDay = progress
+	}
+
+	return usage, nil
 }
 
 func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now time.Time) *UsageProgress {

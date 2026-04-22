@@ -59,6 +59,7 @@ type AccountTestService struct {
 	accountRepo               AccountRepository
 	geminiTokenProvider       *GeminiTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
+	windsurfAccountProbe      *WindsurfAccountProbeService
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
 	tlsFPProfileService       *TLSFingerprintProfileService
@@ -69,6 +70,7 @@ func NewAccountTestService(
 	accountRepo AccountRepository,
 	geminiTokenProvider *GeminiTokenProvider,
 	antigravityGatewayService *AntigravityGatewayService,
+	windsurfAccountProbe *WindsurfAccountProbeService,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
 	tlsFPProfileService *TLSFingerprintProfileService,
@@ -77,6 +79,7 @@ func NewAccountTestService(
 		accountRepo:               accountRepo,
 		geminiTokenProvider:       geminiTokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
+		windsurfAccountProbe:      windsurfAccountProbe,
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
 		tlsFPProfileService:       tlsFPProfileService,
@@ -177,11 +180,49 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.testGeminiAccountConnection(c, account, modelID, prompt)
 	}
 
+	if account.IsWindsurf() {
+		return s.testWindsurfAccountConnection(c, account, modelID)
+	}
+
 	if account.Platform == PlatformAntigravity {
 		return s.routeAntigravityTest(c, account, modelID, prompt)
 	}
 
 	return s.testClaudeAccountConnection(c, account, modelID)
+}
+
+func (s *AccountTestService) testWindsurfAccountConnection(c *gin.Context, account *Account, modelID string) error {
+	if s.windsurfAccountProbe == nil {
+		return s.sendErrorAndEnd(c, "Windsurf probe service not configured")
+	}
+
+	testModelID := strings.TrimSpace(modelID)
+	if testModelID == "" {
+		testModelID = "windsurf-probe"
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+
+	refreshed, err := s.windsurfAccountProbe.ProbeAndPersist(c.Request.Context(), account.ID)
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+
+	summary := fmt.Sprintf(
+		"plan=%s models=%d credits=%.2f",
+		refreshed.GetWindsurfPlanTier(),
+		len(refreshed.GetWindsurfAllowedModels()),
+		refreshed.GetWindsurfCreditBalance(),
+	)
+	s.sendEvent(c, TestEvent{Type: "content", Text: summary})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection
