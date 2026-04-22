@@ -974,7 +974,13 @@ func (a *Account) IsWindsurf() bool {
 }
 
 func (a *Account) GetWindsurfToken() string {
-	if !a.IsWindsurf() || a.Type != AccountTypeAPIKey {
+	if !a.IsWindsurf() {
+		return ""
+	}
+	if a.Type == AccountTypeOAuth {
+		return a.GetCredential("access_token")
+	}
+	if a.Type != AccountTypeAPIKey {
 		return ""
 	}
 	return a.GetCredential("token")

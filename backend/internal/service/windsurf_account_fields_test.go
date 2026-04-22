@@ -60,14 +60,43 @@ func TestWindsurfAccountFields(t *testing.T) {
 	}
 }
 
+func TestWindsurfOAuthAccountUsesAccessToken(t *testing.T) {
+	account := &Account{
+		Platform: PlatformWindsurf,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "windsurf-access-token",
+		},
+	}
+
+	if got := account.GetWindsurfToken(); got != "windsurf-access-token" {
+		t.Fatalf("GetWindsurfToken() = %q, want %q", got, "windsurf-access-token")
+	}
+}
+
 func TestValidatePlatformAccountType(t *testing.T) {
 	if err := validatePlatformAccountType(PlatformWindsurf, AccountTypeAPIKey); err != nil {
 		t.Fatalf("validatePlatformAccountType() unexpected err: %v", err)
 	}
-	if err := validatePlatformAccountType(PlatformWindsurf, AccountTypeOAuth); err == nil {
-		t.Fatal("expected windsurf oauth validation error")
+	if err := validatePlatformAccountType(PlatformWindsurf, AccountTypeOAuth); err != nil {
+		t.Fatalf("windsurf oauth should now be valid: %v", err)
 	}
 	if err := validatePlatformAccountType(PlatformOpenAI, AccountTypeOAuth); err != nil {
 		t.Fatalf("openai oauth should remain valid: %v", err)
+	}
+}
+
+func TestValidateWindsurfCredentials(t *testing.T) {
+	if err := validateWindsurfCredentials(AccountTypeAPIKey, map[string]any{"token": "ws-token"}); err != nil {
+		t.Fatalf("apikey validation unexpected err: %v", err)
+	}
+	if err := validateWindsurfCredentials(AccountTypeOAuth, map[string]any{"access_token": "ws-access"}); err != nil {
+		t.Fatalf("oauth access token validation unexpected err: %v", err)
+	}
+	if err := validateWindsurfCredentials(AccountTypeOAuth, map[string]any{"refresh_token": "ws-refresh"}); err != nil {
+		t.Fatalf("oauth refresh token validation unexpected err: %v", err)
+	}
+	if err := validateWindsurfCredentials(AccountTypeOAuth, map[string]any{}); err == nil {
+		t.Fatal("expected windsurf oauth validation error when tokens are missing")
 	}
 }

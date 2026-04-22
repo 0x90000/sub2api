@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -144,9 +143,8 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
 // Create 创建账号
 func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
 	if req.Platform == PlatformWindsurf {
-		token, _ := req.Credentials["token"].(string)
-		if strings.TrimSpace(token) == "" {
-			return nil, fmt.Errorf("windsurf accounts require credentials.token")
+		if err := validateWindsurfCredentials(req.Type, req.Credentials); err != nil {
+			return nil, err
 		}
 	}
 	// 验证分组是否存在（如果指定了分组）
@@ -246,9 +244,8 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 		return nil, fmt.Errorf("get account: %w", err)
 	}
 	if account.Platform == PlatformWindsurf && req.Credentials != nil {
-		token, _ := (*req.Credentials)["token"].(string)
-		if strings.TrimSpace(token) == "" {
-			return nil, fmt.Errorf("windsurf accounts require credentials.token")
+		if err := validateWindsurfCredentials(account.Type, *req.Credentials); err != nil {
+			return nil, err
 		}
 	}
 

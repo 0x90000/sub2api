@@ -35,6 +35,9 @@ func RegisterAdminRoutes(
 		// OpenAI OAuth
 		registerOpenAIOAuthRoutes(admin, h)
 
+		// Windsurf OAuth
+		registerWindsurfOAuthRoutes(admin, h)
+
 		// Gemini OAuth
 		registerGeminiOAuthRoutes(admin, h)
 
@@ -317,6 +320,16 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.POST("/refresh-token", h.Admin.OpenAIOAuth.RefreshToken)
 		openai.POST("/accounts/:id/refresh", h.Admin.OpenAIOAuth.RefreshAccountToken)
 		openai.POST("/create-from-oauth", h.Admin.OpenAIOAuth.CreateAccountFromOAuth)
+	}
+}
+
+func registerWindsurfOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	windsurf := admin.Group("/windsurf")
+	{
+		windsurf.POST("/oauth/auth-url", h.Admin.WindsurfOAuth.GenerateAuthURL)
+		windsurf.POST("/oauth/exchange-code", h.Admin.WindsurfOAuth.ExchangeCode)
+		windsurf.POST("/oauth/refresh-token", h.Admin.WindsurfOAuth.RefreshToken)
+		windsurf.POST("/oauth/accounts/:id/refresh", h.Admin.WindsurfOAuth.RefreshAccountToken)
 	}
 }
 

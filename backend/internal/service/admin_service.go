@@ -1336,14 +1336,24 @@ func (s *adminServiceImpl) validateFallbackGroupOnInvalidRequest(ctx context.Con
 func validatePlatformAccountType(platform, accountType string) error {
 	switch platform {
 	case PlatformWindsurf:
-		if accountType != AccountTypeAPIKey {
-			return errors.New("windsurf accounts only support apikey type")
+		if accountType != AccountTypeAPIKey && accountType != AccountTypeOAuth {
+			return errors.New("windsurf accounts only support apikey or oauth type")
 		}
 	}
 	return nil
 }
 
-func validateWindsurfCredentials(credentials map[string]any) error {
+func validateWindsurfCredentials(accountType string, credentials map[string]any) error {
+	if accountType == AccountTypeOAuth {
+		if accessToken, _ := credentials["access_token"].(string); strings.TrimSpace(accessToken) != "" {
+			return nil
+		}
+		if refreshToken, _ := credentials["refresh_token"].(string); strings.TrimSpace(refreshToken) != "" {
+			return nil
+		}
+		return errors.New("windsurf oauth accounts require credentials.access_token or credentials.refresh_token")
+	}
+
 	if token, _ := credentials["token"].(string); strings.TrimSpace(token) != "" {
 		return nil
 	}
@@ -1819,7 +1829,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		return nil, err
 	}
 	if input.Platform == PlatformWindsurf {
-		if err := validateWindsurfCredentials(input.Credentials); err != nil {
+		if err := validateWindsurfCredentials(input.Type, input.Credentials); err != nil {
 			return nil, err
 		}
 	}
@@ -1941,7 +1951,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		return nil, err
 	}
 	if account.Platform == PlatformWindsurf && len(input.Credentials) > 0 {
-		if err := validateWindsurfCredentials(input.Credentials); err != nil {
+		if err := validateWindsurfCredentials(targetType, input.Credentials); err != nil {
 			return nil, err
 		}
 	}
