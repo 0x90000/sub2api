@@ -49,6 +49,7 @@ type AccountHandler struct {
 	adminService            service.AdminService
 	oauthService            *service.OAuthService
 	openaiOAuthService      *service.OpenAIOAuthService
+	windsurfOAuthService    *service.WindsurfOAuthService
 	geminiOAuthService      *service.GeminiOAuthService
 	antigravityOAuthService *service.AntigravityOAuthService
 	rateLimitService        *service.RateLimitService
@@ -66,6 +67,7 @@ func NewAccountHandler(
 	adminService service.AdminService,
 	oauthService *service.OAuthService,
 	openaiOAuthService *service.OpenAIOAuthService,
+	windsurfOAuthService *service.WindsurfOAuthService,
 	geminiOAuthService *service.GeminiOAuthService,
 	antigravityOAuthService *service.AntigravityOAuthService,
 	rateLimitService *service.RateLimitService,
@@ -81,6 +83,7 @@ func NewAccountHandler(
 		adminService:            adminService,
 		oauthService:            oauthService,
 		openaiOAuthService:      openaiOAuthService,
+		windsurfOAuthService:    windsurfOAuthService,
 		geminiOAuthService:      geminiOAuthService,
 		antigravityOAuthService: antigravityOAuthService,
 		rateLimitService:        rateLimitService,
@@ -804,6 +807,7 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 	}
 
 	var newCredentials map[string]any
+	var newExtra map[string]any
 
 	if account.IsOpenAI() {
 		tokenInfo, err := h.openaiOAuthService.RefreshAccountToken(ctx, account)
@@ -826,6 +830,19 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 		}
 
 		newCredentials = h.geminiOAuthService.BuildAccountCredentials(tokenInfo)
+		for k, v := range account.Credentials {
+			if _, exists := newCredentials[k]; !exists {
+				newCredentials[k] = v
+			}
+		}
+	} else if account.Platform == service.PlatformWindsurf {
+		tokenInfo, err := h.windsurfOAuthService.RefreshAccountToken(ctx, account)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to refresh credentials: %w", err)
+		}
+
+		newCredentials = h.windsurfOAuthService.BuildAccountCredentials(tokenInfo)
+		newExtra = h.windsurfOAuthService.BuildAccountExtra(tokenInfo, account.Extra)
 		for k, v := range account.Credentials {
 			if _, exists := newCredentials[k]; !exists {
 				newCredentials[k] = v
@@ -898,6 +915,7 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 
 	updatedAccount, err := h.adminService.UpdateAccount(ctx, account.ID, &service.UpdateAccountInput{
 		Credentials: newCredentials,
+		Extra:       newExtra,
 	})
 	if err != nil {
 		return nil, "", err

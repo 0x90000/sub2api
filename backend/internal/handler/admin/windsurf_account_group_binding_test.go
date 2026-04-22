@@ -41,7 +41,7 @@ func TestAccountHandlerCreate_AcceptsWindsurfAPIKey(t *testing.T) {
 
 	adminSvc := newStubAdminService()
 	router := gin.New()
-	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.POST("/api/v1/admin/accounts", handler.Create)
 
 	body := map[string]any{

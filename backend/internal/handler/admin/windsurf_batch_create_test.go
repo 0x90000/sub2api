@@ -16,13 +16,13 @@ func TestAccountHandlerBatchCreate_AcceptsWindsurfTokenPayload(t *testing.T) {
 
 	adminSvc := newStubAdminService()
 	router := gin.New()
-	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.POST("/api/v1/admin/accounts/batch", handler.BatchCreate)
 
 	body := map[string]any{
-		"name":     "windsurf-batch",
-		"platform": "windsurf",
-		"tokens":   []string{"ws-token-1", "ws-token-2"},
+		"name":        "windsurf-batch",
+		"platform":    "windsurf",
+		"tokens":      []string{"ws-token-1", "ws-token-2"},
 		"load_factor": 42,
 		"credentials": map[string]any{
 			"model_mapping": map[string]any{
@@ -56,7 +56,7 @@ func TestAccountHandlerBatchCreate_WindsurfTokenPayloadRejectsOtherPlatforms(t *
 
 	adminSvc := newStubAdminService()
 	router := gin.New()
-	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.POST("/api/v1/admin/accounts/batch", handler.BatchCreate)
 
 	body := map[string]any{

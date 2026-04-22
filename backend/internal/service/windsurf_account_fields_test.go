@@ -74,6 +74,20 @@ func TestWindsurfOAuthAccountUsesAccessToken(t *testing.T) {
 	}
 }
 
+func TestWindsurfOAuthAccountPrefersRuntimeToken(t *testing.T) {
+	account := &Account{
+		Platform: PlatformWindsurf,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"token":        "windsurf-runtime-token",
+			"access_token": "windsurf-access-token",
+		},
+	}
+
+	if got := account.GetWindsurfToken(); got != "windsurf-runtime-token" {
+		t.Fatalf("GetWindsurfToken() = %q, want %q", got, "windsurf-runtime-token")
+	}
+}
 func TestValidatePlatformAccountType(t *testing.T) {
 	if err := validatePlatformAccountType(PlatformWindsurf, AccountTypeAPIKey); err != nil {
 		t.Fatalf("validatePlatformAccountType() unexpected err: %v", err)

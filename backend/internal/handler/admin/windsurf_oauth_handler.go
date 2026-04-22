@@ -131,6 +131,7 @@ func (h *WindsurfOAuthHandler) RefreshAccountToken(c *gin.Context) {
 
 	updatedAccount, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
 		Credentials: newCredentials,
+		Extra:       h.windsurfOAuthService.BuildAccountExtra(tokenInfo, account.Extra),
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)

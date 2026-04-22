@@ -2,10 +2,12 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -120,4 +122,57 @@ func TestWindsurfOAuthHandlerRefreshAccountRejectsOtherPlatforms(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Contains(t, rec.Body.String(), "Account platform does not match OAuth endpoint")
+}
+
+func TestWindsurfOAuthHandlerRefreshTokenSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/firebase":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id_token":      "firebase-id-token",
+				"refresh_token": "firebase-refresh-token-new",
+				"expires_in":    "3600",
+			})
+		case "/register":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api_key": "windsurf-runtime-token",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	oauthService := service.NewWindsurfOAuthService(nil)
+	oauthService.SetEndpointURLs(server.URL+"/firebase", server.URL+"/register")
+	oauthService.SetHTTPClientFactory(func(string) (*http.Client, error) {
+		return server.Client(), nil
+	})
+	oauthService.SetNowFunc(func() time.Time { return time.Unix(1_762_000_300, 0).UTC() })
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler := NewWindsurfOAuthHandler(oauthService, newStubAdminService())
+	router.POST("/api/v1/admin/windsurf/oauth/refresh-token", handler.RefreshToken)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/windsurf/oauth/refresh-token", strings.NewReader(`{"refresh_token":"firebase-refresh-token-old"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Data struct {
+			Token        string `json:"token"`
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, "windsurf-runtime-token", resp.Data.Token)
+	require.Equal(t, "firebase-id-token", resp.Data.AccessToken)
+	require.Equal(t, "firebase-refresh-token-new", resp.Data.RefreshToken)
 }
