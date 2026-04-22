@@ -1343,6 +1343,13 @@ func validatePlatformAccountType(platform, accountType string) error {
 	return nil
 }
 
+func validateWindsurfCredentials(credentials map[string]any) error {
+	if token, _ := credentials["token"].(string); strings.TrimSpace(token) != "" {
+		return nil
+	}
+	return errors.New("windsurf accounts require credentials.token")
+}
+
 func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *UpdateGroupInput) (*Group, error) {
 	group, err := s.groupRepo.GetByID(ctx, id)
 	if err != nil {
@@ -1811,6 +1818,11 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := validatePlatformAccountType(input.Platform, input.Type); err != nil {
 		return nil, err
 	}
+	if input.Platform == PlatformWindsurf {
+		if err := validateWindsurfCredentials(input.Credentials); err != nil {
+			return nil, err
+		}
+	}
 
 	// 绑定分组
 	groupIDs := input.GroupIDs
@@ -1927,6 +1939,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	if err := validatePlatformAccountType(account.Platform, targetType); err != nil {
 		return nil, err
+	}
+	if account.Platform == PlatformWindsurf && len(input.Credentials) > 0 {
+		if err := validateWindsurfCredentials(input.Credentials); err != nil {
+			return nil, err
+		}
 	}
 
 	if input.Name != "" {

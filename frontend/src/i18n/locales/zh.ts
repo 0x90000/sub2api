@@ -2846,6 +2846,16 @@ export default {
         pleaseEnterBaseUrl: '请输入上游 Base URL',
         pleaseEnterApiKey: '请输入上游 API Key'
       },
+      windsurf: {
+        token: 'Token *',
+        tokenHint: '粘贴通过 Windsurf 客户端登录链路获取的 token',
+        tokenRequired: '请输入 Windsurf Token',
+        leaveEmptyToKeep: '留空以保持当前 Token',
+        singleMode: '单个导入',
+        batchMode: '批量导入',
+        batchHint: '每行填写一个 token，后端会为每个 token 创建一个 Windsurf 账号。',
+        batchPlaceholder: 'ws-token-1\nws-token-2'
+      },
       // OAuth flow
       oauth: {
         title: 'Claude 账号授权',

@@ -149,6 +149,24 @@ type BulkUpdateAccountsRequest struct {
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 }
 
+type windsurfBatchCreateRequest struct {
+	Name                    string         `json:"name"`
+	Notes                   *string        `json:"notes"`
+	Platform                string         `json:"platform"`
+	Tokens                  []string       `json:"tokens"`
+	Credentials             map[string]any `json:"credentials"`
+	Extra                   map[string]any `json:"extra"`
+	ProxyID                 *int64         `json:"proxy_id"`
+	Concurrency             int            `json:"concurrency"`
+	Priority                int            `json:"priority"`
+	RateMultiplier          *float64       `json:"rate_multiplier"`
+	LoadFactor              *int           `json:"load_factor"`
+	GroupIDs                []int64        `json:"group_ids"`
+	ExpiresAt               *int64         `json:"expires_at"`
+	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
+	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"`
+}
+
 // CheckMixedChannelRequest represents check mixed channel risk request
 type CheckMixedChannelRequest struct {
 	Platform  string  `json:"platform" binding:"required"`
@@ -1155,22 +1173,37 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 // POST /api/v1/admin/accounts/batch
 func (h *AccountHandler) BatchCreate(c *gin.Context) {
 	var req struct {
-		Accounts []CreateAccountRequest `json:"accounts" binding:"required,min=1"`
+		Accounts []CreateAccountRequest `json:"accounts"`
+		windsurfBatchCreateRequest
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 
+	accounts := req.Accounts
+	if len(accounts) == 0 && len(req.Tokens) > 0 {
+		expanded, err := expandWindsurfBatchCreate(req.windsurfBatchCreateRequest)
+		if err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+		accounts = expanded
+	}
+	if len(accounts) == 0 {
+		response.BadRequest(c, "Invalid request: accounts or windsurf tokens are required")
+		return
+	}
+
 	executeAdminIdempotentJSON(c, "admin.accounts.batch_create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		success := 0
 		failed := 0
-		results := make([]gin.H, 0, len(req.Accounts))
+		results := make([]gin.H, 0, len(accounts))
 		// 收集需要异步设置隐私的 OAuth 账号
 		var antigravityPrivacyAccounts []*service.Account
 		var openaiPrivacyAccounts []*service.Account
 
-		for _, item := range req.Accounts {
+		for _, item := range accounts {
 			if item.RateMultiplier != nil && *item.RateMultiplier < 0 {
 				failed++
 				results = append(results, gin.H{
@@ -1197,6 +1230,7 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				Concurrency:           item.Concurrency,
 				Priority:              item.Priority,
 				RateMultiplier:        item.RateMultiplier,
+				LoadFactor:            item.LoadFactor,
 				GroupIDs:              item.GroupIDs,
 				ExpiresAt:             item.ExpiresAt,
 				AutoPauseOnExpired:    item.AutoPauseOnExpired,
@@ -1265,6 +1299,69 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			"results": results,
 		}, nil
 	})
+}
+
+func expandWindsurfBatchCreate(req windsurfBatchCreateRequest) ([]CreateAccountRequest, error) {
+	if strings.TrimSpace(req.Platform) != service.PlatformWindsurf {
+		return nil, fmt.Errorf("windsurf token batch import only supports platform=%s", service.PlatformWindsurf)
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		return nil, errors.New("name is required")
+	}
+
+	tokens := make([]string, 0, len(req.Tokens))
+	for _, token := range req.Tokens {
+		trimmed := strings.TrimSpace(token)
+		if trimmed == "" {
+			continue
+		}
+		tokens = append(tokens, trimmed)
+	}
+	if len(tokens) == 0 {
+		return nil, errors.New("tokens are required")
+	}
+
+	accounts := make([]CreateAccountRequest, 0, len(tokens))
+	for i, token := range tokens {
+		credentials := cloneAccountPayloadMap(req.Credentials)
+		delete(credentials, "api_key")
+		credentials["token"] = token
+
+		name := req.Name
+		if len(tokens) > 1 {
+			name = fmt.Sprintf("%s #%d", req.Name, i+1)
+		}
+
+		accounts = append(accounts, CreateAccountRequest{
+			Name:                    name,
+			Notes:                   req.Notes,
+			Platform:                service.PlatformWindsurf,
+			Type:                    service.AccountTypeAPIKey,
+			Credentials:             credentials,
+			Extra:                   cloneAccountPayloadMap(req.Extra),
+			ProxyID:                 req.ProxyID,
+			Concurrency:             req.Concurrency,
+			Priority:                req.Priority,
+			RateMultiplier:          req.RateMultiplier,
+			LoadFactor:              req.LoadFactor,
+			GroupIDs:                append([]int64(nil), req.GroupIDs...),
+			ExpiresAt:               req.ExpiresAt,
+			AutoPauseOnExpired:      req.AutoPauseOnExpired,
+			ConfirmMixedChannelRisk: req.ConfirmMixedChannelRisk,
+		})
+	}
+	return accounts, nil
+}
+
+func cloneAccountPayloadMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return map[string]any{}
+	}
+	cloned := make(map[string]any, len(src))
+	for key, value := range src {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 // BatchUpdateCredentialsRequest represents batch credentials update request

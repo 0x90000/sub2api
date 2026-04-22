@@ -147,6 +147,36 @@
             <Icon name="cloud" size="sm" />
             Antigravity
           </button>
+          <button
+            type="button"
+            @click="form.platform = 'windsurf'"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'windsurf'
+                ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <svg
+              class="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M3 12c2.5-4 5.5-6 9-6 3.5 0 6.5 2 9 6-2.5 4-5.5 6-9 6-3.5 0-6.5-2-9-6Z"
+              />
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M9 12h6"
+              />
+            </svg>
+            Windsurf
+          </button>
         </div>
       </div>
 
@@ -849,7 +879,7 @@
 
       <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
       <div v-if="form.type === 'apikey' && form.platform !== 'antigravity'" class="space-y-4">
-        <div>
+        <div v-if="form.platform !== 'windsurf'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
             v-model="apiKeyBaseUrl"
@@ -866,21 +896,57 @@
           <p class="input-hint">{{ baseUrlHint }}</p>
         </div>
         <div>
-          <label class="input-label">{{ t('admin.accounts.apiKeyRequired') }}</label>
-          <input
+          <label class="input-label">{{ credentialSecretLabel }}</label>
+          <div v-if="form.platform === 'windsurf'" class="mb-3 flex gap-2">
+            <button
+              type="button"
+              :class="[
+                'flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-all',
+                windsurfImportMode === 'single'
+                  ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+              @click="windsurfImportMode = 'single'"
+            >
+              {{ t('admin.accounts.windsurf.singleMode') }}
+            </button>
+            <button
+              type="button"
+              data-testid="windsurf-batch-toggle"
+              :class="[
+                'flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-all',
+                windsurfImportMode === 'batch'
+                  ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+              @click="windsurfImportMode = 'batch'"
+            >
+              {{ t('admin.accounts.windsurf.batchMode') }}
+            </button>
+          </div>
+          <textarea
+            v-if="form.platform === 'windsurf' && windsurfImportMode === 'batch'"
             v-model="apiKeyValue"
-            type="password"
+            rows="5"
+            class="input font-mono"
+            data-testid="windsurf-batch-tokens"
+            :placeholder="t('admin.accounts.windsurf.batchPlaceholder')"
+          ></textarea>
+          <input
+            v-else
+            v-model="apiKeyValue"
+            :type="form.platform === 'windsurf' ? 'text' : 'password'"
             required
             class="input font-mono"
-            :placeholder="
-              form.platform === 'openai'
-                ? 'sk-proj-...'
-                : form.platform === 'gemini'
-                  ? 'AIza...'
-                  : 'sk-ant-...'
-            "
+            :placeholder="credentialSecretPlaceholder"
           />
-          <p class="input-hint">{{ apiKeyHint }}</p>
+          <p class="input-hint">{{ credentialSecretHint }}</p>
+          <p
+            v-if="form.platform === 'windsurf' && windsurfImportMode === 'batch'"
+            class="input-hint"
+          >
+            {{ t('admin.accounts.windsurf.batchHint') }}
+          </p>
         </div>
 
         <!-- Gemini API Key tier selection -->
@@ -2977,6 +3043,32 @@ const apiKeyHint = computed(() => {
   return t('admin.accounts.apiKeyHint')
 })
 
+const credentialSecretLabel = computed(() => (
+  form.platform === 'windsurf'
+    ? t('admin.accounts.windsurf.token')
+    : t('admin.accounts.apiKeyRequired')
+))
+
+const credentialSecretPlaceholder = computed(() => {
+  if (form.platform === 'windsurf') return 'ws-token-...'
+  if (form.platform === 'openai') return 'sk-proj-...'
+  if (form.platform === 'gemini') return 'AIza...'
+  return 'sk-ant-...'
+})
+
+const credentialSecretHint = computed(() => (
+  form.platform === 'windsurf'
+    ? t('admin.accounts.windsurf.tokenHint')
+    : apiKeyHint.value
+))
+
+const windsurfParsedTokens = computed(() => (
+  apiKeyValue.value
+    .split('\n')
+    .map(token => token.trim())
+    .filter(token => token.length > 0)
+))
+
 interface Props {
   show: boolean
   proxies: Proxy[]
@@ -3046,6 +3138,7 @@ interface TempUnschedRuleForm {
 const step = ref(1)
 const submitting = ref(false)
 const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock'>('oauth-based') // UI selection for account category
+const windsurfImportMode = ref<'single' | 'batch'>('single')
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
@@ -3377,7 +3470,9 @@ watch(
         ? 'https://api.openai.com'
         : newPlatform === 'gemini'
           ? 'https://generativelanguage.googleapis.com'
-          : 'https://api.anthropic.com'
+          : newPlatform === 'windsurf'
+            ? ''
+            : 'https://api.anthropic.com'
     // Clear model-related settings
     allowedModels.value = []
     modelMappings.value = []
@@ -3390,6 +3485,10 @@ watch(
       antigravityWhitelistModels.value = []
       accountCategory.value = 'oauth-based'
       antigravityAccountType.value = 'oauth'
+    } else if (newPlatform === 'windsurf') {
+      accountCategory.value = 'apikey'
+      modelRestrictionMode.value = 'mapping'
+      windsurfImportMode.value = 'single'
     } else {
       allowOverages.value = false
       antigravityWhitelistModels.value = []
@@ -3768,6 +3867,7 @@ const resetForm = () => {
   form.group_ids = []
   form.expires_at = null
   accountCategory.value = 'oauth-based'
+  windsurfImportMode.value = 'single'
   addMethod.value = 'oauth'
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
@@ -4058,7 +4158,11 @@ const handleSubmit = async () => {
 
   // For apikey type, create directly
   if (!apiKeyValue.value.trim()) {
-    appStore.showError(t('admin.accounts.pleaseEnterApiKey'))
+    appStore.showError(
+      form.platform === 'windsurf'
+        ? t('admin.accounts.windsurf.tokenRequired')
+        : t('admin.accounts.pleaseEnterApiKey')
+    )
     return
   }
 
@@ -4070,11 +4174,59 @@ const handleSubmit = async () => {
         ? 'https://generativelanguage.googleapis.com'
         : 'https://api.anthropic.com'
 
-  // Build credentials with optional model mapping
-  const credentials: Record<string, unknown> = {
-    base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
-    api_key: apiKeyValue.value.trim()
+  if (form.platform === 'windsurf' && windsurfImportMode.value === 'batch') {
+    const tokens = windsurfParsedTokens.value
+    if (tokens.length === 0) {
+      appStore.showError(t('admin.accounts.windsurf.tokenRequired'))
+      return
+    }
+
+    const credentials: Record<string, unknown> = {}
+    const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
+    if (modelMapping) {
+      credentials.model_mapping = modelMapping
+    }
+
+    const result = await adminAPI.accounts.batchCreateWindsurfTokens({
+      name: form.name,
+      notes: form.notes,
+      platform: 'windsurf',
+      tokens,
+      credentials,
+      proxy_id: form.proxy_id,
+      concurrency: form.concurrency,
+      load_factor: form.load_factor ?? undefined,
+      priority: form.priority,
+      rate_multiplier: form.rate_multiplier,
+      group_ids: form.group_ids,
+      expires_at: form.expires_at,
+      auto_pause_on_expired: autoPauseOnExpired.value
+    })
+
+    if (result.success > 0) {
+      appStore.showSuccess(
+        tokens.length > 1
+          ? t('admin.accounts.oauth.batchSuccess', { count: result.success })
+          : t('admin.accounts.accountCreated')
+      )
+      emit('created')
+      handleClose()
+      return
+    }
+
+    appStore.showError(t('admin.accounts.failedToCreate'))
+    return
   }
+
+  // Build credentials with optional model mapping
+  const credentials: Record<string, unknown> = form.platform === 'windsurf'
+    ? {
+        token: apiKeyValue.value.trim()
+      }
+    : {
+        base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
+        api_key: apiKeyValue.value.trim()
+      }
   if (form.platform === 'gemini') {
     credentials.tier_id = geminiTierAIStudio.value
   }

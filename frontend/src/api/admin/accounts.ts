@@ -342,6 +342,38 @@ export async function batchCreate(accounts: CreateAccountRequest[]): Promise<{
   return data
 }
 
+export interface WindsurfBatchCreateRequest {
+  name: string
+  notes?: string | null
+  platform: 'windsurf'
+  tokens: string[]
+  credentials?: Record<string, unknown>
+  extra?: Record<string, unknown>
+  proxy_id?: number | null
+  concurrency?: number
+  load_factor?: number
+  priority?: number
+  rate_multiplier?: number
+  group_ids?: number[]
+  expires_at?: number | null
+  auto_pause_on_expired?: boolean
+}
+
+export async function batchCreateWindsurfTokens(
+  payload: WindsurfBatchCreateRequest
+): Promise<{
+  success: number
+  failed: number
+  results: Array<{ success: boolean; id?: number; name?: string; error?: string }>
+}> {
+  const { data } = await apiClient.post<{
+    success: number
+    failed: number
+    results: Array<{ success: boolean; id?: number; name?: string; error?: string }>
+  }>('/admin/accounts/batch', payload)
+  return data
+}
+
 /**
  * Batch update credentials fields for multiple accounts
  * @param request - Batch update request containing account IDs, field name, and value
@@ -655,6 +687,7 @@ export const accountsAPI = {
   exchangeCode,
   refreshOpenAIToken,
   batchCreate,
+  batchCreateWindsurfTokens,
   batchUpdateCredentials,
   bulkUpdate,
   previewFromCrs,

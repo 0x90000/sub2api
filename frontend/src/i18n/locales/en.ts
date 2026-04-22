@@ -2703,6 +2703,16 @@ export default {
         pleaseEnterBaseUrl: 'Please enter upstream Base URL',
         pleaseEnterApiKey: 'Please enter upstream API Key'
       },
+      windsurf: {
+        token: 'Token *',
+        tokenHint: 'Paste the Windsurf token obtained from the client-side login flow',
+        tokenRequired: 'Please enter Windsurf token',
+        leaveEmptyToKeep: 'Leave empty to keep current token',
+        singleMode: 'Single Token',
+        batchMode: 'Batch Import',
+        batchHint: 'Paste one token per line. The backend will create one Windsurf account for each token.',
+        batchPlaceholder: 'ws-token-1\nws-token-2'
+      },
       // OAuth flow
       oauth: {
         title: 'Claude Account Authorization',

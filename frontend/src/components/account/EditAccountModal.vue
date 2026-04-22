@@ -28,7 +28,7 @@
 
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
-        <div>
+        <div v-if="account.platform !== 'windsurf'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
             v-model="editBaseUrl"
@@ -47,7 +47,7 @@
           <p class="input-hint">{{ baseUrlHint }}</p>
         </div>
         <div>
-          <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
+          <label class="input-label">{{ credentialSecretLabel }}</label>
           <input
             v-model="editApiKey"
             type="password"
@@ -56,17 +56,9 @@
             data-1p-ignore
             data-lpignore="true"
             data-bwignore="true"
-            :placeholder="
-              account.platform === 'openai'
-                ? 'sk-proj-...'
-                : account.platform === 'gemini'
-                  ? 'AIza...'
-                  : account.platform === 'antigravity'
-                    ? 'sk-...'
-                    : 'sk-ant-...'
-            "
+            :placeholder="credentialSecretPlaceholder"
           />
-          <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
+          <p class="input-hint">{{ credentialSecretHint }}</p>
         </div>
 
         <!-- Model Restriction Section (不适用于 Antigravity) -->
@@ -1902,6 +1894,26 @@ const baseUrlHint = computed(() => {
   return t('admin.accounts.baseUrlHint')
 })
 
+const credentialSecretLabel = computed(() => (
+  props.account?.platform === 'windsurf'
+    ? t('admin.accounts.windsurf.token')
+    : t('admin.accounts.apiKey')
+))
+
+const credentialSecretPlaceholder = computed(() => {
+  if (props.account?.platform === 'windsurf') return 'ws-token-...'
+  if (props.account?.platform === 'openai') return 'sk-proj-...'
+  if (props.account?.platform === 'gemini') return 'AIza...'
+  if (props.account?.platform === 'antigravity') return 'sk-...'
+  return 'sk-ant-...'
+})
+
+const credentialSecretHint = computed(() => (
+  props.account?.platform === 'windsurf'
+    ? t('admin.accounts.windsurf.leaveEmptyToKeep')
+    : t('admin.accounts.leaveEmptyToKeep')
+))
+
 const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
 const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
 
@@ -2085,6 +2097,7 @@ const tempUnschedPresets = computed(() => [
 const defaultBaseUrl = computed(() => {
   if (props.account?.platform === 'openai') return 'https://api.openai.com'
   if (props.account?.platform === 'gemini') return 'https://generativelanguage.googleapis.com'
+  if (props.account?.platform === 'windsurf') return ''
   return 'https://api.anthropic.com'
 })
 
@@ -2288,6 +2301,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         ? 'https://api.openai.com'
         : newAccount.platform === 'gemini'
           ? 'https://generativelanguage.googleapis.com'
+          : newAccount.platform === 'windsurf'
+            ? ''
           : 'https://api.anthropic.com'
     editBaseUrl.value = (credentials.base_url as string) || platformDefaultUrl
 
@@ -2879,25 +2894,33 @@ const handleSubmit = async () => {
     // For apikey type, handle credentials update
     if (props.account.type === 'apikey') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
-      const newBaseUrl = editBaseUrl.value.trim() || defaultBaseUrl.value
       const shouldApplyModelMapping = !(props.account.platform === 'openai' && openaiPassthroughEnabled.value)
 
       // Always update credentials for apikey type to handle model mapping changes
-      const newCredentials: Record<string, unknown> = {
-        ...currentCredentials,
-        base_url: newBaseUrl
-      }
+      const newCredentials: Record<string, unknown> = { ...currentCredentials }
 
-      // Handle API key
-      if (editApiKey.value.trim()) {
-        // User provided a new API key
-        newCredentials.api_key = editApiKey.value.trim()
-      } else if (currentCredentials.api_key) {
-        // Preserve existing api_key
-        newCredentials.api_key = currentCredentials.api_key
+      if (props.account.platform === 'windsurf') {
+        if (editApiKey.value.trim()) {
+          newCredentials.token = editApiKey.value.trim()
+        } else if (currentCredentials.token) {
+          newCredentials.token = currentCredentials.token
+        } else {
+          appStore.showError(t('admin.accounts.windsurf.tokenRequired'))
+          return
+        }
+        delete newCredentials.api_key
       } else {
-        appStore.showError(t('admin.accounts.apiKeyIsRequired'))
-        return
+        const newBaseUrl = editBaseUrl.value.trim() || defaultBaseUrl.value
+        newCredentials.base_url = newBaseUrl
+
+        if (editApiKey.value.trim()) {
+          newCredentials.api_key = editApiKey.value.trim()
+        } else if (currentCredentials.api_key) {
+          newCredentials.api_key = currentCredentials.api_key
+        } else {
+          appStore.showError(t('admin.accounts.apiKeyIsRequired'))
+          return
+        }
       }
 
       // Add model mapping if configured（OpenAI 开启自动透传时保留现有映射，不再编辑）
