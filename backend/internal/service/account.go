@@ -362,6 +362,35 @@ func parseTempUnschedStrings(value any) []string {
 	return out
 }
 
+func parseExtraStringSlice(value any) []string {
+	if value == nil {
+		return nil
+	}
+
+	var raw []string
+	switch v := value.(type) {
+	case []string:
+		raw = v
+	case []any:
+		raw = make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				raw = append(raw, s)
+			}
+		}
+	default:
+		return nil
+	}
+
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 func normalizeAccountNotes(value *string) *string {
 	if value == nil {
 		return nil
@@ -938,6 +967,38 @@ func (a *Account) IsOpenAITokenExpired() bool {
 		return false
 	}
 	return time.Now().Add(60 * time.Second).After(*expiresAt)
+}
+
+func (a *Account) IsWindsurf() bool {
+	return a.Platform == PlatformWindsurf
+}
+
+func (a *Account) GetWindsurfToken() string {
+	if !a.IsWindsurf() || a.Type != AccountTypeAPIKey {
+		return ""
+	}
+	return a.GetCredential("token")
+}
+
+func (a *Account) GetWindsurfPlanTier() string {
+	if !a.IsWindsurf() {
+		return ""
+	}
+	return a.GetExtraString("plan_tier")
+}
+
+func (a *Account) GetWindsurfAllowedModels() []string {
+	if !a.IsWindsurf() || a.Extra == nil {
+		return nil
+	}
+	return parseExtraStringSlice(a.Extra["allowed_models"])
+}
+
+func (a *Account) GetWindsurfCreditBalance() float64 {
+	if !a.IsWindsurf() {
+		return 0
+	}
+	return a.getExtraFloat64("credit_balance")
 }
 
 // IsMixedSchedulingEnabled 检查 antigravity 账户是否启用混合调度

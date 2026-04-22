@@ -97,6 +97,7 @@ export default {
       claude: 'Claude',
       gemini: 'Gemini',
       antigravity: 'Antigravity',
+      windsurf: 'Windsurf',
       more: '更多'
     },
     // CTA 区块
@@ -1816,6 +1817,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        windsurf: 'Windsurf',
       },
       saving: '保存中...',
       noGroups: '暂无分组',
@@ -2400,6 +2402,7 @@ export default {
         anthropic: 'Anthropic',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        windsurf: 'Windsurf',
       },
       types: {
         oauth: 'OAuth',

@@ -19,6 +19,11 @@
   <svg v-else-if="platform === 'antigravity'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
     <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" />
   </svg>
+  <!-- Windsurf logo (wind) -->
+  <svg v-else-if="platform === 'windsurf'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor" data-platform-icon="windsurf">
+    <path d="M4 8.5A3.5 3.5 0 0 1 7.5 5H19a1 1 0 1 1 0 2H7.5a1.5 1.5 0 0 0 0 3H16a3 3 0 1 1 0 6H5a1 1 0 1 1 0-2h11a1 1 0 0 0 0-2H8A3.5 3.5 0 0 1 4 8.5Z" />
+    <path d="M13 17a1 1 0 0 1 1-1h3a2 2 0 1 0 0-4 1 1 0 1 1 0-2 4 4 0 1 1 0 8h-3a1 1 0 0 1-1-1Z" />
+  </svg>
   <!-- Fallback: generic platform icon -->
   <svg v-else :class="sizeClass" fill="currentColor" viewBox="0 0 24 24">
     <path

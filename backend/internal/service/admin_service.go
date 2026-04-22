@@ -1330,6 +1330,16 @@ func (s *adminServiceImpl) validateFallbackGroupOnInvalidRequest(ctx context.Con
 	return nil
 }
 
+func validatePlatformAccountType(platform, accountType string) error {
+	switch platform {
+	case PlatformWindsurf:
+		if accountType != AccountTypeAPIKey {
+			return errors.New("windsurf accounts only support apikey type")
+		}
+	}
+	return nil
+}
+
 func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *UpdateGroupInput) (*Group, error) {
 	group, err := s.groupRepo.GetByID(ctx, id)
 	if err != nil {
@@ -1795,6 +1805,10 @@ func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	if err := validatePlatformAccountType(input.Platform, input.Type); err != nil {
+		return nil, err
+	}
+
 	// 绑定分组
 	groupIDs := input.GroupIDs
 	// 如果没有指定分组,自动绑定对应平台的默认分组
@@ -1904,6 +1918,13 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		return nil, err
 	}
 	wasOveragesEnabled := account.IsOveragesEnabled()
+	targetType := account.Type
+	if input.Type != "" {
+		targetType = input.Type
+	}
+	if err := validatePlatformAccountType(account.Platform, targetType); err != nil {
+		return nil, err
+	}
 
 	if input.Name != "" {
 		account.Name = input.Name

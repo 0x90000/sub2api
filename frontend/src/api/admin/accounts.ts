@@ -6,6 +6,7 @@
 import { apiClient } from '../client'
 import type {
   Account,
+  AccountPlatform,
   CreateAccountRequest,
   UpdateAccountRequest,
   PaginatedResponse,
@@ -31,7 +32,7 @@ export async function list(
   page: number = 1,
   pageSize: number = 20,
   filters?: {
-    platform?: string
+    platform?: AccountPlatform
     type?: string
     status?: string
     group?: string
@@ -66,7 +67,7 @@ export async function listWithEtag(
   page: number = 1,
   pageSize: number = 20,
   filters?: {
-    platform?: string
+    platform?: AccountPlatform
     type?: string
     status?: string
     group?: string
@@ -501,7 +502,7 @@ export async function syncFromCrs(params: {
 export async function exportData(options?: {
   ids?: number[]
   filters?: {
-    platform?: string
+    platform?: AccountPlatform
     type?: string
     status?: string
     group?: string

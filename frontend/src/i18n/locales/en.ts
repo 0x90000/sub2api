@@ -97,6 +97,7 @@ export default {
       claude: 'Claude',
       gemini: 'Gemini',
       antigravity: 'Antigravity',
+      windsurf: 'Windsurf',
       more: 'More'
     },
     // CTA section
@@ -1780,6 +1781,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        windsurf: 'Windsurf',
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
@@ -2213,6 +2215,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        windsurf: 'Windsurf',
       },
       types: {
         oauth: 'OAuth',

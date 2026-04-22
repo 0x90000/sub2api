@@ -22,6 +22,7 @@ const (
 	PlatformOpenAI      = "openai"
 	PlatformGemini      = "gemini"
 	PlatformAntigravity = "antigravity"
+	PlatformWindsurf    = "windsurf"
 )
 
 // Account type constants
