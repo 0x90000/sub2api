@@ -2716,6 +2716,8 @@ export default {
         refreshCatalogSuccess: 'Windsurf credits and model catalog refreshed',
         refreshCatalogFailed: 'Failed to refresh Windsurf credits and model catalog',
         allowedModelsCount: '{count} models available',
+        billingBoundaryHint:
+          'Windsurf AI Credits and model catalog are upstream snapshots only. Local billing still follows Today Stats, account multipliers, and Usage records in this site.',
         plan: {
           free: 'free',
           pro: 'pro'
@@ -3536,6 +3538,8 @@ export default {
     usage: {
       title: 'Usage Records',
       description: 'View and manage all user usage records',
+      billingBoundaryHint:
+        'Usage records only reflect local sub2api billing. Upstream quotas such as Windsurf AI Credits are not settled here and should be checked in account management.',
       userFilter: 'User',
       searchUserPlaceholder: 'Search user by email...',
       searchApiKeyPlaceholder: 'Search API key by name...',

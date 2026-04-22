@@ -2859,6 +2859,8 @@ export default {
         refreshCatalogSuccess: '已刷新 Windsurf 额度和模型目录',
         refreshCatalogFailed: '刷新 Windsurf 额度和模型目录失败',
         allowedModelsCount: '可用模型 {count} 个',
+        billingBoundaryHint:
+          'Windsurf 的 AI Credits 和模型目录只是上游快照；本站实际计费仍以今日统计、账号倍率和 Usage 页面里的本地账单为准。',
         plan: {
           free: 'free',
           pro: 'pro'
@@ -3694,6 +3696,8 @@ export default {
     usage: {
       title: '使用记录',
       description: '查看和管理所有用户的使用记录',
+      billingBoundaryHint:
+        'Usage 页面只统计本站 sub2api 的本地账单。像 Windsurf AI Credits 这类上游额度不会在这里结算，请到账号管理中查看。',
       userFilter: '用户',
       searchUserPlaceholder: '按邮箱搜索用户...',
       searchApiKeyPlaceholder: '按名称搜索 API 密钥...',

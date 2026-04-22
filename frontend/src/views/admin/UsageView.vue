@@ -100,6 +100,9 @@
           </div>
         </template>
       </UsageFilters>
+      <div class="rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900 dark:border-cyan-800/50 dark:bg-cyan-950/20 dark:text-cyan-100">
+        {{ t('admin.usage.billingBoundaryHint') }}
+      </div>
       <UsageTable
         :data="usageLogs"
         :loading="loading"

@@ -139,6 +139,12 @@
             {{ t('admin.accounts.listPendingSyncAction') }}
           </button>
         </div>
+        <div
+          v-if="showWindsurfBillingHint"
+          class="mt-2 rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm text-cyan-900 dark:border-cyan-800/50 dark:bg-cyan-950/20 dark:text-cyan-100"
+        >
+          {{ t('admin.accounts.windsurf.billingBoundaryHint') }}
+        </div>
       </template>
       <template #table>
         <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @reset-status="handleBulkResetStatus" @refresh-token="handleBulkRefreshToken" @edit="showBulkEdit = true" @clear="clearSelection" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
@@ -661,6 +667,10 @@ const {
 } = useTableSelection<Account>({
   rows: accounts,
   getId: (account) => account.id
+})
+
+const showWindsurfBillingHint = computed(() => {
+  return params.platform === 'windsurf' || accounts.value.some((account) => account.platform === 'windsurf')
 })
 
 const swipeVirtualContext: SwipeSelectVirtualContext = {
