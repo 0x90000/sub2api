@@ -14,6 +14,14 @@ func TestWindsurfAccountFields(t *testing.T) {
 		},
 		Extra: map[string]any{
 			"allowed_models": []any{" claude-3.5-sonnet ", "", "gpt-4.1"},
+			"model_configs": []any{
+				map[string]any{
+					"id":                "gpt-4.1",
+					"model_uid":         "MODEL_CHAT_GPT_4_1_2025_04_14",
+					"provider":          "MODEL_PROVIDER_OPENAI",
+					"credit_multiplier": 1.5,
+				},
+			},
 			"plan_tier":      "pro",
 			"credit_balance": "12.5",
 		},
@@ -35,6 +43,20 @@ func TestWindsurfAccountFields(t *testing.T) {
 	wantModels := []string{"claude-3.5-sonnet", "gpt-4.1"}
 	if got := account.GetWindsurfAllowedModels(); !reflect.DeepEqual(got, wantModels) {
 		t.Fatalf("GetWindsurfAllowedModels() = %v, want %v", got, wantModels)
+	}
+	gotConfigs := account.GetWindsurfModelConfigs()
+	if len(gotConfigs) != 1 {
+		t.Fatalf("GetWindsurfModelConfigs() len = %d, want %d", len(gotConfigs), 1)
+	}
+	if gotConfigs[0].ModelID != "gpt-4.1" || gotConfigs[0].ModelUID != "MODEL_CHAT_GPT_4_1_2025_04_14" {
+		t.Fatalf("GetWindsurfModelConfigs()[0] = %+v", gotConfigs[0])
+	}
+	cfg, ok := account.GetWindsurfModelConfigByID("gpt-4.1")
+	if !ok {
+		t.Fatal("expected GetWindsurfModelConfigByID to resolve stored config")
+	}
+	if cfg.CreditMultiplier != 1.5 {
+		t.Fatalf("GetWindsurfModelConfigByID().CreditMultiplier = %v, want %v", cfg.CreditMultiplier, 1.5)
 	}
 }
 

@@ -111,6 +111,7 @@ func (s *WindsurfAccountProbeService) probe(ctx context.Context, account *Accoun
 		"credit_balance":   status.CreditBalance,
 		"usage_updated_at": now.Format(time.RFC3339),
 		"allowed_models":   allowedModels,
+		"model_configs":    serializeWindsurfModelConfigs(preferredWindsurfModelConfigs(modelConfigs, account.GetWindsurfModelConfigs())),
 		"probe_error":      buildWindsurfProbeWarning(modelErr, rateErr),
 	}
 
@@ -246,4 +247,40 @@ func buildWindsurfProbeWarning(modelErr, rateErr error) string {
 		parts = append(parts, "rate_limit: "+rateErr.Error())
 	}
 	return strings.Join(parts, "; ")
+}
+
+func preferredWindsurfModelConfigs(current, fallback []WindsurfModelConfig) []WindsurfModelConfig {
+	if len(current) > 0 {
+		return current
+	}
+	if len(fallback) > 0 {
+		return fallback
+	}
+	return nil
+}
+
+func serializeWindsurfModelConfigs(configs []WindsurfModelConfig) []map[string]any {
+	if len(configs) == 0 {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(configs))
+	for _, cfg := range configs {
+		modelID := strings.TrimSpace(cfg.ModelID)
+		if modelID == "" {
+			continue
+		}
+		entry := map[string]any{
+			"id":                modelID,
+			"provider":          strings.TrimSpace(cfg.Provider),
+			"credit_multiplier": cfg.CreditMultiplier,
+		}
+		if modelUID := strings.TrimSpace(cfg.ModelUID); modelUID != "" {
+			entry["model_uid"] = modelUID
+		}
+		if displayName := strings.TrimSpace(cfg.DisplayName); displayName != "" {
+			entry["display_name"] = displayName
+		}
+		out = append(out, entry)
+	}
+	return out
 }

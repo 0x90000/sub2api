@@ -385,6 +385,44 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	return svc
 }
 
+func ProvideWindsurfGatewayService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cfg *config.Config,
+	billingService *BillingService,
+	billingCacheService *BillingCacheService,
+	deferredService *DeferredService,
+	accountProbe *WindsurfAccountProbeService,
+	modelCatalog *WindsurfModelCatalogService,
+	usageFetcher *WindsurfUsageFetcher,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	errorMapper *WindsurfErrorMapper,
+	chatBridge *WindsurfChatBridge,
+) *WindsurfGatewayService {
+	svc := NewWindsurfGatewayService(accountRepo, accountProbe, modelCatalog, usageFetcher, errorMapper, chatBridge)
+	svc.ConfigureBilling(
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		userGroupRateRepo,
+		cfg,
+		billingService,
+		billingCacheService,
+		deferredService,
+		resolver,
+		channelService,
+		balanceNotifyService,
+	)
+	return svc
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
@@ -410,7 +448,8 @@ var ProviderSet = wire.NewSet(
 	NewWindsurfModelCatalogService,
 	NewWindsurfUsageFetcher,
 	NewWindsurfErrorMapper,
-	NewWindsurfGatewayService,
+	NewWindsurfChatBridge,
+	ProvideWindsurfGatewayService,
 	NewOAuthService,
 	NewOpenAIOAuthService,
 	NewGeminiOAuthService,

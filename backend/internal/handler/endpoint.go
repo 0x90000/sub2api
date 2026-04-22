@@ -15,6 +15,7 @@ import (
 // ──────────────────────────────────────────────────────────
 
 const (
+	EndpointModels          = "/v1/models"
 	EndpointMessages        = "/v1/messages"
 	EndpointChatCompletions = "/v1/chat/completions"
 	EndpointResponses       = "/v1/responses"
@@ -40,6 +41,8 @@ const (
 func NormalizeInboundEndpoint(path string) string {
 	path = strings.TrimSpace(path)
 	switch {
+	case strings.Contains(path, EndpointModels):
+		return EndpointModels
 	case strings.Contains(path, EndpointChatCompletions):
 		return EndpointChatCompletions
 	case strings.Contains(path, EndpointMessages):
@@ -66,6 +69,9 @@ func NormalizeInboundEndpoint(path string) string {
 //     inbound endpoint is used to distinguish.
 func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 	inbound = strings.TrimSpace(inbound)
+	if inbound == EndpointModels {
+		return EndpointModels
+	}
 
 	switch platform {
 	case service.PlatformOpenAI:

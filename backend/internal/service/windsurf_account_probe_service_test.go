@@ -84,6 +84,13 @@ func TestWindsurfAccountProbePersistsAccountSnapshot(t *testing.T) {
 			t.Fatalf("allowed_models[%d] = %q, want %q", i, gotModels[i], wantModels[i])
 		}
 	}
+	gotConfigs := account.GetWindsurfModelConfigs()
+	if len(gotConfigs) != 2 {
+		t.Fatalf("model_configs len = %d, want %d", len(gotConfigs), 2)
+	}
+	if gotConfigs[0].ModelID != "gpt-4.1" || gotConfigs[0].ModelUID != "gpt-4.1" {
+		t.Fatalf("model_configs[0] = %+v", gotConfigs[0])
+	}
 
 	if repo.rateLimitedAt == nil {
 		t.Fatal("expected rate limit snapshot to be persisted")

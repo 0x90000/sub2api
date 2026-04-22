@@ -42,6 +42,8 @@ type WindsurfUserStatusSnapshot struct {
 
 type WindsurfModelConfig struct {
 	ModelID          string
+	ModelUID         string
+	DisplayName      string
 	Provider         string
 	CreditMultiplier float64
 }
@@ -154,18 +156,20 @@ func (f *WindsurfUsageFetcher) GetCascadeModelConfigs(ctx context.Context, req W
 
 	configs := make([]WindsurfModelConfig, 0, len(resp.ClientModelConfigs))
 	for _, item := range resp.ClientModelConfigs {
-		modelID := normalizeWindsurfModelIdentifier(item.ModelUID)
-		if modelID == "" {
-			modelID = normalizeWindsurfModelIdentifier(item.Name)
-		}
+		modelID := normalizeWindsurfModelIdentifier(item.Name)
 		if modelID == "" {
 			modelID = normalizeWindsurfModelIdentifier(item.DisplayName)
+		}
+		if modelID == "" {
+			modelID = normalizeWindsurfModelIdentifier(item.ModelUID)
 		}
 		if modelID == "" {
 			continue
 		}
 		configs = append(configs, WindsurfModelConfig{
 			ModelID:          modelID,
+			ModelUID:         strings.TrimSpace(item.ModelUID),
+			DisplayName:      strings.TrimSpace(firstNonEmptyString(item.DisplayName, item.Name, item.ModelUID)),
 			Provider:         strings.TrimSpace(item.Provider),
 			CreditMultiplier: item.CreditMultiplier,
 		})
@@ -266,4 +270,13 @@ func unixTimePtr(value int64) *time.Time {
 	}
 	ts := time.Unix(value, 0).UTC()
 	return &ts
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

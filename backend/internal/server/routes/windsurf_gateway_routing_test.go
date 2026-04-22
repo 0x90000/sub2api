@@ -23,7 +23,7 @@ func newWindsurfGatewayRoutesTestRouter() *gin.Engine {
 		&handler.Handlers{
 			Gateway:         &handler.GatewayHandler{},
 			OpenAIGateway:   &handler.OpenAIGatewayHandler{},
-			WindsurfGateway: handler.NewWindsurfGatewayHandler(service.NewWindsurfGatewayService()),
+			WindsurfGateway: handler.NewWindsurfGatewayHandler(service.NewWindsurfGatewayService(nil, nil, service.NewWindsurfModelCatalogService(nil), nil, nil, nil)),
 		},
 		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
 			groupID := int64(1)
@@ -46,17 +46,26 @@ func newWindsurfGatewayRoutesTestRouter() *gin.Engine {
 func TestWindsurfGatewayRouting(t *testing.T) {
 	router := newWindsurfGatewayRoutesTestRouter()
 
-	for _, path := range []string{"/v1/messages", "/v1/chat/completions", "/v1/responses"} {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"windsurf-test"}`))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
+	messagesReq := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"windsurf-test"}`))
+	messagesReq.Header.Set("Content-Type", "application/json")
+	messagesResp := httptest.NewRecorder()
+	router.ServeHTTP(messagesResp, messagesReq)
+	require.NotEqual(t, http.StatusNotFound, messagesResp.Code, "path=%s should be routed to windsurf handler", "/v1/messages")
 
-		router.ServeHTTP(w, req)
-		require.Equal(t, http.StatusNotImplemented, w.Code, "path=%s should hit windsurf placeholder handler", path)
-	}
+	responsesReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"windsurf-test"}`))
+	responsesReq.Header.Set("Content-Type", "application/json")
+	responsesResp := httptest.NewRecorder()
+	router.ServeHTTP(responsesResp, responsesReq)
+	require.Equal(t, http.StatusNotImplemented, responsesResp.Code, "path=%s should hit windsurf placeholder handler", "/v1/responses")
+
+	chatReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"windsurf-test"}`))
+	chatReq.Header.Set("Content-Type", "application/json")
+	chatResp := httptest.NewRecorder()
+	router.ServeHTTP(chatResp, chatReq)
+	require.NotEqual(t, http.StatusNotFound, chatResp.Code, "path=%s should be routed to windsurf handler", "/v1/chat/completions")
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-	require.Equal(t, http.StatusNotImplemented, w.Code, "path=%s should hit windsurf placeholder handler", "/v1/models")
+	require.Equal(t, http.StatusOK, w.Code, "path=%s should hit windsurf models handler", "/v1/models")
 }

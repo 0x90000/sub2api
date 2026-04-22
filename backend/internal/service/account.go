@@ -994,6 +994,62 @@ func (a *Account) GetWindsurfAllowedModels() []string {
 	return parseExtraStringSlice(a.Extra["allowed_models"])
 }
 
+func (a *Account) GetWindsurfModelConfigs() []WindsurfModelConfig {
+	if !a.IsWindsurf() || a.Extra == nil {
+		return nil
+	}
+
+	raw, ok := a.Extra["model_configs"]
+	if !ok || raw == nil {
+		return nil
+	}
+
+	items, ok := raw.([]any)
+	if !ok {
+		if typed, ok := raw.([]map[string]any); ok {
+			items = make([]any, 0, len(typed))
+			for _, item := range typed {
+				items = append(items, item)
+			}
+		} else {
+			return nil
+		}
+	}
+
+	configs := make([]WindsurfModelConfig, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok || entry == nil {
+			continue
+		}
+		modelID := strings.TrimSpace(parseAnyString(entry["id"]))
+		if modelID == "" {
+			continue
+		}
+		configs = append(configs, WindsurfModelConfig{
+			ModelID:          modelID,
+			ModelUID:         strings.TrimSpace(parseAnyString(entry["model_uid"])),
+			DisplayName:      strings.TrimSpace(parseAnyString(entry["display_name"])),
+			Provider:         strings.TrimSpace(parseAnyString(entry["provider"])),
+			CreditMultiplier: parseExtraFloat64(entry["credit_multiplier"]),
+		})
+	}
+	return configs
+}
+
+func (a *Account) GetWindsurfModelConfigByID(modelID string) (WindsurfModelConfig, bool) {
+	target := normalizeWindsurfModelIdentifier(modelID)
+	if target == "" {
+		return WindsurfModelConfig{}, false
+	}
+	for _, cfg := range a.GetWindsurfModelConfigs() {
+		if normalizeWindsurfModelIdentifier(cfg.ModelID) == target {
+			return cfg, true
+		}
+	}
+	return WindsurfModelConfig{}, false
+}
+
 func (a *Account) GetWindsurfCreditBalance() float64 {
 	if !a.IsWindsurf() {
 		return 0
@@ -2085,6 +2141,23 @@ func parseExtraFloat64(value any) float64 {
 		}
 	}
 	return 0
+}
+
+func parseAnyString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case json.Number:
+		return v.String()
+	case float64:
+		return strconv.FormatInt(int64(v), 10)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case int:
+		return strconv.Itoa(v)
+	default:
+		return ""
+	}
 }
 
 // parseExtraInt 从 extra 字段解析 int 值

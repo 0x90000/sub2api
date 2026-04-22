@@ -9,13 +9,14 @@ import (
 
 func TestWindsurfServiceSmoke(t *testing.T) {
 	probe := service.NewWindsurfAccountProbeService(nil, nil, nil)
-	catalog := service.NewWindsurfModelCatalogService()
+	catalog := service.NewWindsurfModelCatalogService(nil)
 	usage := service.NewWindsurfUsageFetcher(nil)
 	mapper := service.NewWindsurfErrorMapper()
-	gateway := service.NewWindsurfGatewayService(probe, catalog, usage, mapper)
+	bridge := service.NewWindsurfChatBridge()
+	gateway := service.NewWindsurfGatewayService(nil, probe, catalog, usage, mapper, bridge)
 	handler := handlerpkg.NewWindsurfGatewayHandler(gateway)
 
-	if probe == nil || catalog == nil || usage == nil || mapper == nil {
+	if probe == nil || catalog == nil || usage == nil || mapper == nil || bridge == nil {
 		t.Fatal("expected windsurf support services to be constructed")
 	}
 	if gateway == nil {
