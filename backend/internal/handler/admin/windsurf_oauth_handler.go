@@ -138,5 +138,10 @@ func (h *WindsurfOAuthHandler) RefreshAccountToken(c *gin.Context) {
 		return
 	}
 
+	clearedAccount, err := h.adminService.ClearAccountError(c.Request.Context(), accountID)
+	if err == nil && clearedAccount != nil {
+		updatedAccount = clearedAccount
+	}
+
 	response.Success(c, dto.AccountFromService(updatedAccount))
 }

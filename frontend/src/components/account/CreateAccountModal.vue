@@ -4259,6 +4259,18 @@ const handleSubmit = async () => {
     if (modelMapping) {
       credentials.model_mapping = modelMapping
     }
+    if (poolModeEnabled.value) {
+      credentials.pool_mode = true
+      credentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
+    }
+    if (customErrorCodesEnabled.value) {
+      credentials.custom_error_codes_enabled = true
+      credentials.custom_error_codes = [...selectedErrorCodes.value]
+    }
+    applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+    if (!applyTempUnschedConfig(credentials)) {
+      return
+    }
 
     const result = await adminAPI.accounts.batchCreateWindsurfTokens({
       name: form.name,
@@ -4760,6 +4772,18 @@ const handleWindsurfValidateRT = async (refreshTokenInput: string) => {
         }
 
         const credentials = windsurfOAuth.buildCredentials(tokenInfo)
+        const modelMapping = buildModelMappingObject(
+          modelRestrictionMode.value,
+          allowedModels.value,
+          modelMappings.value
+        )
+        if (modelMapping) {
+          credentials.model_mapping = modelMapping
+        }
+        applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+        if (!applyTempUnschedConfig(credentials)) {
+          return
+        }
         const extra = windsurfOAuth.buildExtraInfo(tokenInfo)
         const accountName = refreshTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
 

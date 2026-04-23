@@ -9,13 +9,15 @@ const {
   batchCreateWindsurfTokensMock,
   checkMixedChannelRiskMock,
   getWebSearchEmulationConfigMock,
-  listTLSFingerprintProfilesMock
+  listTLSFingerprintProfilesMock,
+  applyInterceptWarmupMock
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
   batchCreateWindsurfTokensMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
   getWebSearchEmulationConfigMock: vi.fn(),
-  listTLSFingerprintProfilesMock: vi.fn()
+  listTLSFingerprintProfilesMock: vi.fn(),
+  applyInterceptWarmupMock: vi.fn()
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -95,7 +97,7 @@ vi.mock('@/composables/useAntigravityOAuth', () => ({
 }))
 
 vi.mock('@/components/account/credentialsBuilder', () => ({
-  applyInterceptWarmup: vi.fn()
+  applyInterceptWarmup: applyInterceptWarmupMock
 }))
 
 vi.mock('@/utils/format', () => ({
@@ -158,6 +160,7 @@ describe('Windsurf batch import', () => {
     checkMixedChannelRiskMock.mockReset()
     getWebSearchEmulationConfigMock.mockReset()
     listTLSFingerprintProfilesMock.mockReset()
+    applyInterceptWarmupMock.mockReset()
 
     createAccountMock.mockResolvedValue({})
     batchCreateWindsurfTokensMock.mockResolvedValue({ success: 2, failed: 0, results: [] })
@@ -184,6 +187,22 @@ describe('Windsurf batch import', () => {
 
     ;(wrapper.vm as any).form.name = 'windsurf-batch'
     ;(wrapper.vm as any).apiKeyValue = 'ws-token-1\nws-token-2'
+    ;(wrapper.vm as any).modelRestrictionMode = 'mapping'
+    ;(wrapper.vm as any).modelMappings = [{ from: 'claude-3-7-sonnet', to: 'gpt-4.1' }]
+    ;(wrapper.vm as any).poolModeEnabled = true
+    ;(wrapper.vm as any).poolModeRetryCount = 4
+    ;(wrapper.vm as any).customErrorCodesEnabled = true
+    ;(wrapper.vm as any).selectedErrorCodes = [429, 529]
+    ;(wrapper.vm as any).interceptWarmupRequests = true
+    ;(wrapper.vm as any).tempUnschedEnabled = true
+    ;(wrapper.vm as any).tempUnschedRules = [
+      {
+        error_code: 503,
+        keywords: 'upstream timeout, overload',
+        duration_minutes: 20,
+        description: 'transient upstream issue'
+      }
+    ]
 
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
 
@@ -192,8 +211,35 @@ describe('Windsurf batch import', () => {
       expect.objectContaining({
         name: 'windsurf-batch',
         platform: 'windsurf',
-        tokens: ['ws-token-1', 'ws-token-2']
+        tokens: ['ws-token-1', 'ws-token-2'],
+        credentials: {
+          model_mapping: {
+            'claude-3-7-sonnet': 'gpt-4.1'
+          },
+          pool_mode: true,
+          pool_mode_retry_count: 4,
+          custom_error_codes_enabled: true,
+          custom_error_codes: [429, 529],
+          temp_unschedulable_enabled: true,
+          temp_unschedulable_rules: [
+            {
+              error_code: 503,
+              keywords: ['upstream timeout', 'overload'],
+              duration_minutes: 20,
+              description: 'transient upstream issue'
+            }
+          ]
+        }
       })
+    )
+    expect(applyInterceptWarmupMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model_mapping: {
+          'claude-3-7-sonnet': 'gpt-4.1'
+        }
+      }),
+      true,
+      'create'
     )
     expect(createAccountMock).not.toHaveBeenCalled()
   })

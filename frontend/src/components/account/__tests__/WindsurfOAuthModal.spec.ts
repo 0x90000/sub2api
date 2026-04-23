@@ -11,7 +11,8 @@ const {
   listTLSFingerprintProfilesMock,
   windsurfValidateRefreshTokenMock,
   windsurfBuildCredentialsMock,
-  windsurfBuildExtraInfoMock
+  windsurfBuildExtraInfoMock,
+  applyInterceptWarmupMock
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
@@ -19,7 +20,8 @@ const {
   listTLSFingerprintProfilesMock: vi.fn(),
   windsurfValidateRefreshTokenMock: vi.fn(),
   windsurfBuildCredentialsMock: vi.fn(),
-  windsurfBuildExtraInfoMock: vi.fn()
+  windsurfBuildExtraInfoMock: vi.fn(),
+  applyInterceptWarmupMock: vi.fn()
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -114,7 +116,7 @@ vi.mock('@/composables/useWindsurfOAuth', () => ({
 }))
 
 vi.mock('@/components/account/credentialsBuilder', () => ({
-  applyInterceptWarmup: vi.fn()
+  applyInterceptWarmup: applyInterceptWarmupMock
 }))
 
 vi.mock('@/utils/format', () => ({
@@ -194,6 +196,7 @@ describe('Windsurf OAuth create flow', () => {
     windsurfValidateRefreshTokenMock.mockReset()
     windsurfBuildCredentialsMock.mockReset()
     windsurfBuildExtraInfoMock.mockReset()
+    applyInterceptWarmupMock.mockReset()
 
     createAccountMock.mockResolvedValue({})
     checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
@@ -235,6 +238,18 @@ describe('Windsurf OAuth create flow', () => {
 
     ;(wrapper.vm as any).accountCategory = 'oauth-based'
     ;(wrapper.vm as any).form.name = 'windsurf-oauth'
+    ;(wrapper.vm as any).modelRestrictionMode = 'mapping'
+    ;(wrapper.vm as any).modelMappings = [{ from: 'claude-3-7-sonnet', to: 'gpt-4.1' }]
+    ;(wrapper.vm as any).interceptWarmupRequests = true
+    ;(wrapper.vm as any).tempUnschedEnabled = true
+    ;(wrapper.vm as any).tempUnschedRules = [
+      {
+        error_code: 429,
+        keywords: 'rate limit, overload',
+        duration_minutes: 15,
+        description: 'rate limit fallback'
+      }
+    ]
     await flushPromises()
 
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
@@ -253,13 +268,34 @@ describe('Windsurf OAuth create flow', () => {
         credentials: expect.objectContaining({
           token: 'ws-runtime-token',
           access_token: 'firebase-id-token',
-          refresh_token: 'firebase-refresh-token'
+          refresh_token: 'firebase-refresh-token',
+          model_mapping: {
+            'claude-3-7-sonnet': 'gpt-4.1'
+          },
+          temp_unschedulable_enabled: true,
+          temp_unschedulable_rules: [
+            {
+              error_code: 429,
+              keywords: ['rate limit', 'overload'],
+              duration_minutes: 15,
+              description: 'rate limit fallback'
+            }
+          ]
         }),
         extra: expect.objectContaining({
           oauth_display_name: 'Windsurf OAuth',
           oauth_last_refresh_error: ''
         })
       })
+    )
+    expect(applyInterceptWarmupMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: 'ws-runtime-token',
+        access_token: 'firebase-id-token',
+        refresh_token: 'firebase-refresh-token'
+      }),
+      true,
+      'create'
     )
   })
 })
