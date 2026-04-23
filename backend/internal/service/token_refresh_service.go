@@ -100,6 +100,14 @@ func (s *TokenRefreshService) SetRefreshPolicy(policy BackgroundRefreshPolicy) {
 	s.refreshPolicy = policy
 }
 
+func (s *TokenRefreshService) RegisterRefresher(executor OAuthRefreshExecutor) {
+	if s == nil || executor == nil {
+		return
+	}
+	s.refreshers = append(s.refreshers, executor)
+	s.executors = append(s.executors, executor)
+}
+
 // Start 启动后台刷新服务
 func (s *TokenRefreshService) Start() {
 	if !s.cfg.Enabled {
