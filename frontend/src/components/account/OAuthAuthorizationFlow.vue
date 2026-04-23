@@ -15,7 +15,7 @@
             {{ methodLabel }}
           </label>
           <div class="flex flex-wrap gap-4">
-            <label class="flex cursor-pointer items-center gap-2">
+            <label v-if="showManualOption" class="flex cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -561,6 +561,7 @@ interface Props {
   showMobileRefreshTokenOption?: boolean // Whether to show mobile refresh token option (OpenAI only)
   showSessionTokenOption?: boolean
   showAccessTokenOption?: boolean
+  showManualOption?: boolean
   platform?: AccountPlatform // Platform type for different UI/text
   showProjectId?: boolean // New prop to control project ID visibility
 }
@@ -579,6 +580,7 @@ const props = withDefaults(defineProps<Props>(), {
   showMobileRefreshTokenOption: false,
   showSessionTokenOption: false,
   showAccessTokenOption: false,
+  showManualOption: true,
   platform: 'anthropic',
   showProjectId: true
 })
@@ -624,8 +626,18 @@ const oauthImportantNotice = computed(() => {
   return ''
 })
 
+const getDefaultInputMethod = (): AuthInputMethod => {
+  if (props.showManualOption) return 'manual'
+  if (props.showRefreshTokenOption) return 'refresh_token'
+  if (props.showMobileRefreshTokenOption) return 'mobile_refresh_token'
+  if (props.showSessionTokenOption) return 'session_token'
+  if (props.showAccessTokenOption) return 'access_token'
+  if (props.showCookieOption) return 'cookie'
+  return 'manual'
+}
+
 // Local state
-const inputMethod = ref<AuthInputMethod>(props.showCookieOption ? 'manual' : 'manual')
+const inputMethod = ref<AuthInputMethod>(getDefaultInputMethod())
 const authCodeInput = ref('')
 const sessionKeyInput = ref('')
 const refreshTokenInput = ref('')
@@ -660,6 +672,31 @@ const parsedRefreshTokenCount = computed(() => {
 watch(inputMethod, (newVal) => {
   emit('update:inputMethod', newVal)
 })
+
+watch(
+  () => [
+    props.showManualOption,
+    props.showCookieOption,
+    props.showRefreshTokenOption,
+    props.showMobileRefreshTokenOption,
+    props.showSessionTokenOption,
+    props.showAccessTokenOption
+  ],
+  () => {
+    const allowedMethods = new Set<AuthInputMethod>()
+    if (props.showManualOption) allowedMethods.add('manual')
+    if (props.showCookieOption) allowedMethods.add('cookie')
+    if (props.showRefreshTokenOption) allowedMethods.add('refresh_token')
+    if (props.showMobileRefreshTokenOption) allowedMethods.add('mobile_refresh_token')
+    if (props.showSessionTokenOption) allowedMethods.add('session_token')
+    if (props.showAccessTokenOption) allowedMethods.add('access_token')
+
+    if (!allowedMethods.has(inputMethod.value)) {
+      inputMethod.value = getDefaultInputMethod()
+    }
+  },
+  { immediate: true }
+)
 
 // Auto-extract code from callback URL (OpenAI/Gemini/Antigravity)
 // e.g., http://localhost:8085/callback?code=xxx...&state=...
@@ -743,7 +780,7 @@ defineExpose({
     sessionKeyInput.value = ''
     refreshTokenInput.value = ''
     sessionTokenInput.value = ''
-    inputMethod.value = 'manual'
+    inputMethod.value = getDefaultInputMethod()
     showHelpDialog.value = false
   }
 })

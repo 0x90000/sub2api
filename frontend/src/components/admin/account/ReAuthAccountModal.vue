@@ -20,6 +20,8 @@
                   ? 'from-blue-500 to-blue-600'
                   : isAntigravity
                     ? 'from-purple-500 to-purple-600'
+                    : isWindsurf
+                      ? 'from-cyan-500 to-cyan-600'
                     : 'from-orange-500 to-orange-600'
             ]"
           >
@@ -37,6 +39,8 @@
                     ? t('admin.accounts.geminiAccount')
                     : isAntigravity
                       ? t('admin.accounts.antigravityAccount')
+                      : isWindsurf
+                        ? t('admin.accounts.platforms.windsurf')
                       : t('admin.accounts.claudeCodeAccount')
               }}
             </span>
@@ -126,12 +130,15 @@
         :show-help="isAnthropic"
         :show-proxy-warning="isAnthropic"
         :show-cookie-option="isAnthropic"
+        :show-refresh-token-option="isWindsurf"
+        :show-manual-option="!isWindsurf"
         :allow-multiple="false"
         :method-label="t('admin.accounts.inputMethod')"
-        :platform="isOpenAI ? 'openai' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : 'anthropic'"
+        :platform="isOpenAI ? 'openai' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : isWindsurf ? 'windsurf' : 'anthropic'"
         :show-project-id="isGemini && geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
+        @validate-refresh-token="handleValidateRefreshToken"
       />
 
     </div>
@@ -192,6 +199,7 @@ import {
 import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
+import { useWindsurfOAuth } from '@/composables/useWindsurfOAuth'
 import type { Account } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -227,6 +235,7 @@ const claudeOAuth = useAccountOAuth()
 const openaiOAuth = useOpenAIOAuth()
 const geminiOAuth = useGeminiOAuth()
 const antigravityOAuth = useAntigravityOAuth()
+const windsurfOAuth = useWindsurfOAuth()
 
 // Refs
 const oauthFlowRef = ref<OAuthFlowExposed | null>(null)
@@ -241,30 +250,35 @@ const isOpenAILike = computed(() => isOpenAI.value)
 const isGemini = computed(() => props.account?.platform === 'gemini')
 const isAnthropic = computed(() => props.account?.platform === 'anthropic')
 const isAntigravity = computed(() => props.account?.platform === 'antigravity')
+const isWindsurf = computed(() => props.account?.platform === 'windsurf')
 
 // Computed - current OAuth state based on platform
 const currentAuthUrl = computed(() => {
   if (isOpenAILike.value) return openaiOAuth.authUrl.value
   if (isGemini.value) return geminiOAuth.authUrl.value
   if (isAntigravity.value) return antigravityOAuth.authUrl.value
+  if (isWindsurf.value) return windsurfOAuth.authUrl.value
   return claudeOAuth.authUrl.value
 })
 const currentSessionId = computed(() => {
   if (isOpenAILike.value) return openaiOAuth.sessionId.value
   if (isGemini.value) return geminiOAuth.sessionId.value
   if (isAntigravity.value) return antigravityOAuth.sessionId.value
+  if (isWindsurf.value) return windsurfOAuth.sessionId.value
   return claudeOAuth.sessionId.value
 })
 const currentLoading = computed(() => {
   if (isOpenAILike.value) return openaiOAuth.loading.value
   if (isGemini.value) return geminiOAuth.loading.value
   if (isAntigravity.value) return antigravityOAuth.loading.value
+  if (isWindsurf.value) return windsurfOAuth.loading.value
   return claudeOAuth.loading.value
 })
 const currentError = computed(() => {
   if (isOpenAILike.value) return openaiOAuth.error.value
   if (isGemini.value) return geminiOAuth.error.value
   if (isAntigravity.value) return antigravityOAuth.error.value
+  if (isWindsurf.value) return windsurfOAuth.error.value
   return claudeOAuth.error.value
 })
 
@@ -316,6 +330,7 @@ const resetState = () => {
   openaiOAuth.resetState()
   geminiOAuth.resetState()
   antigravityOAuth.resetState()
+  windsurfOAuth.resetState()
   oauthFlowRef.value?.reset()
 }
 
@@ -335,8 +350,41 @@ const handleGenerateUrl = async () => {
     await geminiOAuth.generateAuthUrl(props.account.proxy_id, projectId, geminiOAuthType.value, tierId)
   } else if (isAntigravity.value) {
     await antigravityOAuth.generateAuthUrl(props.account.proxy_id)
+  } else if (isWindsurf.value) {
+    return
   } else {
     await claudeOAuth.generateAuthUrl(addMethod.value, props.account.proxy_id)
+  }
+}
+
+const handleValidateRefreshToken = async (refreshToken: string) => {
+  if (!props.account || !isWindsurf.value || !refreshToken.trim()) return
+
+  const tokenInfo = await windsurfOAuth.validateRefreshToken(refreshToken.trim(), props.account.proxy_id)
+  if (!tokenInfo) return
+
+  const credentials = {
+    ...((props.account.credentials || {}) as Record<string, unknown>),
+    ...windsurfOAuth.buildCredentials(tokenInfo)
+  }
+  const extra = {
+    ...((props.account.extra || {}) as Record<string, unknown>),
+    ...windsurfOAuth.buildExtraInfo(tokenInfo)
+  }
+
+  try {
+    await adminAPI.accounts.update(props.account.id, {
+      type: 'oauth',
+      credentials,
+      extra
+    })
+    const updatedAccount = await adminAPI.accounts.clearError(props.account.id)
+    appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+    emit('reauthorized', updatedAccount)
+    handleClose()
+  } catch (error: any) {
+    windsurfOAuth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
+    appStore.showError(windsurfOAuth.error.value)
   }
 }
 

@@ -2890,6 +2890,17 @@ export default {
                     validateAndCreate: 'Validate & Create',
                     pleaseEnterRefreshToken: 'Please enter Refresh Token',
                     failedToValidateRT: 'Failed to validate Refresh Token'
+                  },
+                  windsurf: {
+                    title: 'Windsurf Account Authorization',
+                    refreshTokenAuth: 'Manual RT',
+                    refreshTokenDesc: 'Enter your Windsurf Refresh Token. The backend will validate it, exchange it for a runtime token, and create the account. Batch input is supported with one token per line.',
+                    refreshTokenPlaceholder: 'Paste your Windsurf Refresh Token...\nSupports multiple tokens, one per line',
+                    validating: 'Validating...',
+                    validateAndCreate: 'Validate & Create',
+                    pleaseEnterRefreshToken: 'Please enter Windsurf Refresh Token',
+                    failedToValidateRT: 'Failed to validate Windsurf Refresh Token',
+                    authCodeUnsupported: 'Windsurf OAuth currently only supports refresh token import'
                   }
                 },      // Gemini specific (platform-wide)
       gemini: {

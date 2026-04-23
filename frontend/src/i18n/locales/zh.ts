@@ -3023,6 +3023,17 @@ export default {
           validateAndCreate: '验证并创建账号',
           pleaseEnterRefreshToken: '请输入 Refresh Token',
           failedToValidateRT: '验证 Refresh Token 失败'
+        },
+        windsurf: {
+          title: 'Windsurf 账户授权',
+          refreshTokenAuth: '手动输入 RT',
+          refreshTokenDesc: '输入您的 Windsurf Refresh Token，系统会在后端验证并换取运行 token 后创建账号。支持批量输入，每行一个。',
+          refreshTokenPlaceholder: '粘贴您的 Windsurf Refresh Token...\n支持多个，每行一个',
+          validating: '验证中...',
+          validateAndCreate: '验证并创建账号',
+          pleaseEnterRefreshToken: '请输入 Windsurf Refresh Token',
+          failedToValidateRT: '验证 Windsurf Refresh Token 失败',
+          authCodeUnsupported: 'Windsurf OAuth 暂不支持授权码模式，请使用 Refresh Token 导入'
         }
       },
       // Gemini specific (platform-wide)
