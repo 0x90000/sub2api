@@ -291,6 +291,7 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 
 		// 不可重试错误（invalid_grant/invalid_client 等）直接标记 error 状态并返回
 		if isNonRetryableRefreshError(err) {
+			s.recordWindsurfRefreshError(ctx, account, err)
 			errorMsg := fmt.Sprintf("Token refresh failed (non-retryable): %v", err)
 			if setErr := s.accountRepo.SetError(ctx, account.ID, errorMsg); setErr != nil {
 				slog.Error("token_refresh.set_error_status_failed",
@@ -331,6 +332,7 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 	// 刷新失败但 access_token 可能仍有效，尝试设置隐私
 	s.ensureOpenAIPrivacy(ctx, account)
 	s.ensureAntigravityPrivacy(ctx, account)
+	s.recordWindsurfRefreshError(ctx, account, lastErr)
 
 	// 设置临时不可调度 10 分钟（不标记 error，保持 status=active 让下个刷新周期能继续尝试）
 	until := time.Now().Add(tokenRefreshTempUnschedDuration)
@@ -352,6 +354,9 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 
 // postRefreshActions 刷新成功后的后续动作（清除错误状态、缓存失效、调度器同步等）
 func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *Account) {
+	s.recordWindsurfRefreshSuccess(ctx, account)
+	s.clearWindsurfRefreshErrorState(ctx, account)
+
 	// Antigravity 账户：如果之前是因为缺少 project_id 而标记为 error，现在成功获取到了，清除错误状态
 	if account.Platform == PlatformAntigravity &&
 		account.Status == StatusError &&
@@ -414,6 +419,96 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 }
 
 // errRefreshSkipped 表示刷新被跳过（锁竞争或已被其他路径刷新），不计入 failed 或 refreshed
+func (s *TokenRefreshService) recordWindsurfRefreshSuccess(ctx context.Context, account *Account) {
+	if account == nil || account.Platform != PlatformWindsurf || account.Type != AccountTypeOAuth {
+		return
+	}
+
+	updates := map[string]any{
+		"oauth_last_refresh_at":    time.Now().UTC().Format(time.RFC3339),
+		"oauth_last_refresh_error": "",
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("token_refresh.update_windsurf_refresh_state_failed",
+			"account_id", account.ID,
+			"error", err,
+		)
+		return
+	}
+	mergeTokenRefreshExtra(account, updates)
+}
+
+func (s *TokenRefreshService) recordWindsurfRefreshError(ctx context.Context, account *Account, refreshErr error) {
+	if account == nil || account.Platform != PlatformWindsurf || account.Type != AccountTypeOAuth || refreshErr == nil {
+		return
+	}
+
+	message := strings.TrimSpace(refreshErr.Error())
+	if message == "" {
+		return
+	}
+	if len(message) > 500 {
+		message = message[:500]
+	}
+
+	updates := map[string]any{
+		"oauth_last_refresh_error": message,
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("token_refresh.update_windsurf_refresh_error_failed",
+			"account_id", account.ID,
+			"error", err,
+		)
+		return
+	}
+	mergeTokenRefreshExtra(account, updates)
+}
+
+func (s *TokenRefreshService) clearWindsurfRefreshErrorState(ctx context.Context, account *Account) {
+	if account == nil || account.Platform != PlatformWindsurf || account.Type != AccountTypeOAuth {
+		return
+	}
+	if account.Status != StatusError {
+		return
+	}
+	if !isRecoverableTokenRefreshErrorMessage(account.ErrorMessage) {
+		return
+	}
+
+	if err := s.accountRepo.ClearError(ctx, account.ID); err != nil {
+		slog.Warn("token_refresh.clear_windsurf_error_failed",
+			"account_id", account.ID,
+			"error", err,
+		)
+		return
+	}
+	account.Status = StatusActive
+	account.ErrorMessage = ""
+}
+
+func isRecoverableTokenRefreshErrorMessage(message string) bool {
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(msg, "token refresh failed") ||
+		strings.Contains(msg, "invalid_client") ||
+		strings.Contains(msg, "missing_project_id") ||
+		strings.Contains(msg, "unauthenticated")
+}
+
+func mergeTokenRefreshExtra(account *Account, updates map[string]any) {
+	if account == nil || len(updates) == 0 {
+		return
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	for k, v := range updates {
+		account.Extra[k] = v
+	}
+}
+
 var errRefreshSkipped = fmt.Errorf("refresh skipped")
 
 // isNonRetryableRefreshError 判断是否为不可重试的刷新错误

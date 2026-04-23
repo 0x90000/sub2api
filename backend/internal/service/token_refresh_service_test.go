@@ -17,10 +17,13 @@ type tokenRefreshAccountRepo struct {
 	updateCalls            int
 	fullUpdateCalls        int
 	updateCredentialsCalls int
+	updateExtraCalls       int
 	setErrorCalls          int
+	clearErrorCalls        int
 	clearTempCalls         int
 	setTempUnschedCalls    int
 	lastAccount            *Account
+	lastExtraUpdates       map[string]any
 	updateErr              error
 }
 
@@ -51,6 +54,35 @@ func (r *tokenRefreshAccountRepo) UpdateCredentials(ctx context.Context, id int6
 
 func (r *tokenRefreshAccountRepo) SetError(ctx context.Context, id int64, errorMsg string) error {
 	r.setErrorCalls++
+	return nil
+}
+
+func (r *tokenRefreshAccountRepo) ClearError(ctx context.Context, id int64) error {
+	r.clearErrorCalls++
+	if r.accountsByID != nil {
+		if acc, ok := r.accountsByID[id]; ok && acc != nil {
+			acc.Status = StatusActive
+			acc.ErrorMessage = ""
+			r.lastAccount = acc
+		}
+	}
+	return nil
+}
+
+func (r *tokenRefreshAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
+	r.updateExtraCalls++
+	r.lastExtraUpdates = cloneCredentials(updates)
+	if r.accountsByID != nil {
+		if acc, ok := r.accountsByID[id]; ok && acc != nil {
+			if acc.Extra == nil {
+				acc.Extra = map[string]any{}
+			}
+			for k, v := range updates {
+				acc.Extra[k] = v
+			}
+			r.lastAccount = acc
+		}
+	}
 	return nil
 }
 
@@ -280,6 +312,135 @@ func TestTokenRefreshService_RefreshWithRetry_OtherPlatformOAuth(t *testing.T) {
 	require.Equal(t, 1, repo.updateCalls)
 	require.Equal(t, 1, repo.updateCredentialsCalls)
 	require.Equal(t, 1, invalidator.calls) // 所有 OAuth 账户刷新后触发缓存失效
+}
+
+func TestTokenRefreshService_RefreshWithRetry_WindsurfSuccessUpdatesRefreshState(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{},
+		},
+	}
+	invalidator := &tokenCacheInvalidatorStub{}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
+	account := &Account{
+		ID:           41,
+		Platform:     PlatformWindsurf,
+		Type:         AccountTypeOAuth,
+		Status:       StatusError,
+		ErrorMessage: "token refresh failed previously",
+		Credentials: map[string]any{
+			"refresh_token": "old-refresh-token",
+		},
+		Extra: map[string]any{
+			"oauth_last_refresh_error": "stale token",
+		},
+	}
+	repo.accountsByID[account.ID] = account
+	refresher := &tokenRefresherStub{
+		credentials: map[string]any{
+			"token":         "windsurf-runtime-token",
+			"access_token":  "firebase-id-token",
+			"refresh_token": "new-refresh-token",
+		},
+	}
+
+	err := service.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.updateCredentialsCalls)
+	require.Equal(t, 1, repo.updateExtraCalls)
+	require.Equal(t, 1, repo.clearErrorCalls)
+	require.Equal(t, 1, invalidator.calls)
+	require.Equal(t, "", account.Extra["oauth_last_refresh_error"])
+	require.NotEmpty(t, account.Extra["oauth_last_refresh_at"])
+	require.Equal(t, StatusActive, account.Status)
+	require.Empty(t, account.ErrorMessage)
+}
+
+func TestTokenRefreshService_RefreshWithRetry_WindsurfFailurePersistsRefreshError(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{},
+		},
+	}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
+	account := &Account{
+		ID:       42,
+		Platform: PlatformWindsurf,
+		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{},
+	}
+	repo.accountsByID[account.ID] = account
+	refresher := &tokenRefresherStub{
+		err: errors.New("upstream 503"),
+	}
+
+	err := service.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+	require.Error(t, err)
+	require.Equal(t, 0, repo.updateCredentialsCalls)
+	require.Equal(t, 1, repo.updateExtraCalls)
+	require.Equal(t, 0, repo.clearErrorCalls)
+	require.Equal(t, 1, repo.setTempUnschedCalls)
+	require.Contains(t, account.Extra["oauth_last_refresh_error"], "upstream 503")
+}
+
+func TestTokenRefreshService_RefreshWithRetry_WindsurfSuccessDoesNotClearNonRefreshError(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{},
+		},
+	}
+	invalidator := &tokenCacheInvalidatorStub{}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
+	account := &Account{
+		ID:           43,
+		Platform:     PlatformWindsurf,
+		Type:         AccountTypeOAuth,
+		Status:       StatusError,
+		ErrorMessage: "catalog probe failed",
+		Credentials: map[string]any{
+			"refresh_token": "old-refresh-token",
+		},
+		Extra: map[string]any{
+			"oauth_last_refresh_error": "stale token",
+		},
+	}
+	repo.accountsByID[account.ID] = account
+	refresher := &tokenRefresherStub{
+		credentials: map[string]any{
+			"token":         "windsurf-runtime-token",
+			"access_token":  "firebase-id-token",
+			"refresh_token": "new-refresh-token",
+		},
+	}
+
+	err := service.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.updateCredentialsCalls)
+	require.Equal(t, 1, repo.updateExtraCalls)
+	require.Equal(t, 0, repo.clearErrorCalls)
+	require.Equal(t, 1, invalidator.calls)
+	require.Equal(t, "", account.Extra["oauth_last_refresh_error"])
+	require.NotEmpty(t, account.Extra["oauth_last_refresh_at"])
+	require.Equal(t, StatusError, account.Status)
+	require.Equal(t, "catalog probe failed", account.ErrorMessage)
 }
 
 func TestTokenRefreshService_RefreshWithRetry_UsesCredentialsUpdater(t *testing.T) {
