@@ -72,4 +72,12 @@ describe('useModelWhitelist', () => {
       'gpt-5.4-mini': 'gpt-5.4-mini'
     })
   })
+
+  it('windsurf model list is populated for optional restriction selection', () => {
+    const models = getModelsByPlatform('windsurf')
+
+    expect(models).toContain('gpt-4.1')
+    expect(models).toContain('claude-4-sonnet')
+    expect(models).toContain('swe-1.6')
+  })
 })

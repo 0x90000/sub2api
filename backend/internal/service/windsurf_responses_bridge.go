@@ -8,6 +8,11 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 )
 
+type windsurfChatRequestAttempt struct {
+	selection *WindsurfAccountSelection
+	ctx       context.Context
+}
+
 func (s *WindsurfGatewayService) CompleteResponses(
 	ctx context.Context,
 	groupID *int64,
@@ -30,14 +35,18 @@ func (s *WindsurfGatewayService) CompleteResponsesWithMetadata(
 	if err != nil {
 		return nil, nil, err
 	}
-	candidates, err := s.listChatCompletionAccountSelections(ctx, groupID, req.Model)
+	chatReq, err := convertWindsurfAnthropicToChatRequest(anthropicReq)
+	if err != nil {
+		return nil, nil, err
+	}
+	attempts, err := s.responseChatRequestAttempts(ctx, groupID, chatReq)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	var lastErr error
-	for i := range candidates {
-		resp, metadata, err := s.completeResponsesWithSelection(ctx, req, anthropicReq, &candidates[i])
+	for _, attempt := range attempts {
+		resp, metadata, err := s.completeResponsesWithChatRequest(attempt.ctx, groupID, req, anthropicReq, chatReq, attempt.selection)
 		if err == nil {
 			return resp, metadata, nil
 		}
@@ -73,31 +82,82 @@ func (s *WindsurfGatewayService) StreamResponsesWithMetadata(
 	if err != nil {
 		return nil, err
 	}
-	candidates, err := s.listChatCompletionAccountSelections(ctx, groupID, req.Model)
+	chatReq, err := convertWindsurfAnthropicToChatRequest(anthropicReq)
+	if err != nil {
+		return nil, err
+	}
+	attempts, err := s.responseChatRequestAttempts(ctx, groupID, chatReq)
 	if err != nil {
 		return nil, err
 	}
 
 	var lastErr error
-	for i := range candidates {
-		metadata, err := s.streamResponsesWithSelection(ctx, req, anthropicReq, &candidates[i], emit)
+	for _, attempt := range attempts {
+		attemptStarted := false
+		metadata, err := s.streamResponsesWithChatRequest(attempt.ctx, groupID, req, anthropicReq, chatReq, attempt.selection, func(event apicompat.ResponsesStreamEvent) error {
+			attemptStarted = true
+			return emit(event)
+		})
 		if err == nil {
 			return metadata, nil
 		}
-		var startedErr *windsurfResponseStreamStartedError
-		if errors.As(err, &startedErr) {
-			return nil, startedErr.Unwrap()
+		if attemptStarted {
+			return nil, err
 		}
 		lastErr = err
 	}
 	return nil, lastErr
 }
 
+func (s *WindsurfGatewayService) responseChatRequestAttempts(
+	ctx context.Context,
+	groupID *int64,
+	chatReq *apicompat.ChatCompletionsRequest,
+) ([]windsurfChatRequestAttempt, error) {
+	primary, primaryCtx, err := s.selectChatCompletionAccountForRequest(ctx, groupID, chatReq)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates, err := s.listChatCompletionAccountSelections(ctx, groupID, chatReq.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	scope := windsurfConversationScopeForRequest(ctx, groupID)
+	baseCtx := WithWindsurfConversationScope(ctx, scope)
+	attempts := make([]windsurfChatRequestAttempt, 0, len(candidates))
+	seenAccounts := make(map[int64]struct{}, len(candidates))
+
+	appendAttempt := func(selection *WindsurfAccountSelection, attemptCtx context.Context) {
+		if selection == nil || selection.Account == nil {
+			return
+		}
+		if _, ok := seenAccounts[selection.Account.ID]; ok {
+			return
+		}
+		seenAccounts[selection.Account.ID] = struct{}{}
+		attempts = append(attempts, windsurfChatRequestAttempt{
+			selection: selection,
+			ctx:       attemptCtx,
+		})
+	}
+
+	appendAttempt(primary, primaryCtx)
+	for i := range candidates {
+		candidate := candidates[i]
+		appendAttempt(&candidate, baseCtx)
+	}
+	return attempts, nil
+}
+
 func buildWindsurfResponsesUsage(usage WindsurfBridgeUsage) *apicompat.ResponsesUsage {
+	inputTokens := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens
+	outputTokens := usage.OutputTokens + usage.ImageOutputTokens
 	return &apicompat.ResponsesUsage{
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
-		TotalTokens:  usage.InputTokens + usage.OutputTokens,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		TotalTokens:  inputTokens + outputTokens,
 		InputTokensDetails: &apicompat.ResponsesInputTokensDetails{
 			CachedTokens: usage.CacheReadTokens,
 		},
@@ -106,11 +166,27 @@ func buildWindsurfResponsesUsage(usage WindsurfBridgeUsage) *apicompat.Responses
 
 func (s *WindsurfGatewayService) completeResponsesWithSelection(
 	ctx context.Context,
+	groupID *int64,
 	req *apicompat.ResponsesRequest,
 	anthropicReq *apicompat.AnthropicRequest,
 	selection *WindsurfAccountSelection,
 ) (*apicompat.ResponsesResponse, *WindsurfExecutionMetadata, error) {
-	resp, metadata, err := s.completeMessagesWithSelection(ctx, anthropicReq, selection)
+	chatReq, err := convertWindsurfAnthropicToChatRequest(anthropicReq)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s.completeResponsesWithChatRequest(ctx, groupID, req, anthropicReq, chatReq, selection)
+}
+
+func (s *WindsurfGatewayService) completeResponsesWithChatRequest(
+	ctx context.Context,
+	groupID *int64,
+	req *apicompat.ResponsesRequest,
+	anthropicReq *apicompat.AnthropicRequest,
+	chatReq *apicompat.ChatCompletionsRequest,
+	selection *WindsurfAccountSelection,
+) (*apicompat.ResponsesResponse, *WindsurfExecutionMetadata, error) {
+	resp, metadata, err := s.completeMessagesWithChatRequest(ctx, groupID, anthropicReq, chatReq, selection)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -127,15 +203,32 @@ func (s *WindsurfGatewayService) completeResponsesWithSelection(
 
 func (s *WindsurfGatewayService) streamResponsesWithSelection(
 	ctx context.Context,
+	groupID *int64,
 	req *apicompat.ResponsesRequest,
 	anthropicReq *apicompat.AnthropicRequest,
+	selection *WindsurfAccountSelection,
+	emit func(apicompat.ResponsesStreamEvent) error,
+) (*WindsurfExecutionMetadata, error) {
+	chatReq, err := convertWindsurfAnthropicToChatRequest(anthropicReq)
+	if err != nil {
+		return nil, err
+	}
+	return s.streamResponsesWithChatRequest(ctx, groupID, req, anthropicReq, chatReq, selection, emit)
+}
+
+func (s *WindsurfGatewayService) streamResponsesWithChatRequest(
+	ctx context.Context,
+	groupID *int64,
+	req *apicompat.ResponsesRequest,
+	anthropicReq *apicompat.AnthropicRequest,
+	chatReq *apicompat.ChatCompletionsRequest,
 	selection *WindsurfAccountSelection,
 	emit func(apicompat.ResponsesStreamEvent) error,
 ) (*WindsurfExecutionMetadata, error) {
 	state := apicompat.NewAnthropicEventToResponsesState()
 	streamStarted := false
 
-	metadata, err := s.streamMessagesWithSelection(ctx, anthropicReq, selection, func(event apicompat.AnthropicStreamEvent) error {
+	metadata, err := s.streamMessagesWithChatRequest(ctx, groupID, anthropicReq, chatReq, selection, func(event apicompat.AnthropicStreamEvent) error {
 		for _, responseEvent := range apicompat.AnthropicEventToResponsesEvents(&event, state) {
 			if responseEvent.Type == "response.completed" {
 				state.CompletedSent = false
@@ -155,8 +248,8 @@ func (s *WindsurfGatewayService) streamResponsesWithSelection(
 		return nil, err
 	}
 	if metadata != nil {
-		state.InputTokens = metadata.Usage.InputTokens
-		state.OutputTokens = metadata.Usage.OutputTokens
+		state.InputTokens = metadata.Usage.InputTokens + metadata.Usage.CacheReadTokens + metadata.Usage.CacheCreationTokens
+		state.OutputTokens = metadata.Usage.OutputTokens + metadata.Usage.ImageOutputTokens
 		state.CacheReadInputTokens = metadata.Usage.CacheReadTokens
 	}
 

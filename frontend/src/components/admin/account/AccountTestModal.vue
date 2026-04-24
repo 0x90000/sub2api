@@ -251,12 +251,6 @@ const loadingModels = ref(false)
 let abortController: AbortController | null = null
 const generatedImages = ref<PreviewImage[]>([])
 const prioritizedGeminiModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash']
-const windsurfFallbackModel: ClaudeModel = {
-  id: 'windsurf-probe',
-  type: 'model',
-  display_name: 'Windsurf Probe',
-  created_at: ''
-}
 const supportsGeminiImageTest = computed(() => {
   const modelID = selectedModelId.value.toLowerCase()
   if (!modelID.startsWith('gemini-') || !modelID.includes('-image')) return false
@@ -273,6 +267,17 @@ const sortTestModels = (models: ClaudeModel[]) => {
     if (aPriority !== bPriority) return aPriority - bPriority
     return 0
   })
+}
+
+const loadWindsurfModels = async () => {
+  if (!props.account) return []
+
+  let models = await adminAPI.accounts.getAvailableModels(props.account.id)
+  if (props.account.platform === 'windsurf' && models.length === 0) {
+    await adminAPI.accounts.refreshCredentials(props.account.id)
+    models = await adminAPI.accounts.getAvailableModels(props.account.id)
+  }
+  return models
 }
 
 // Load available models when modal opens
@@ -301,13 +306,10 @@ const loadAvailableModels = async () => {
   loadingModels.value = true
   selectedModelId.value = '' // Reset selection before loading
   try {
-    const models = await adminAPI.accounts.getAvailableModels(props.account.id)
+    const models = await loadWindsurfModels()
     availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
       ? sortTestModels(models)
       : models
-    if (props.account.platform === 'windsurf' && availableModels.value.length === 0) {
-      availableModels.value = [windsurfFallbackModel]
-    }
     // Default selection by platform
     if (availableModels.value.length > 0) {
       if (props.account.platform === 'gemini') {

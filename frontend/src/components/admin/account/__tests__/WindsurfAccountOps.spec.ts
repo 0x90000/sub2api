@@ -6,15 +6,17 @@ import AccountTestModal from '../AccountTestModal.vue'
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import type { Account } from '@/types'
 
-const { getAvailableModels, copyToClipboard } = vi.hoisted(() => ({
+const { getAvailableModels, refreshCredentials, copyToClipboard } = vi.hoisted(() => ({
   getAvailableModels: vi.fn(),
+  refreshCredentials: vi.fn(),
   copyToClipboard: vi.fn()
 }))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
-      getAvailableModels
+      getAvailableModels,
+      refreshCredentials
     }
   }
 }))
@@ -96,8 +98,10 @@ function makeWindsurfAccount(overrides: Partial<Account> = {}): Account {
 describe('Windsurf account ops', () => {
   beforeEach(() => {
     getAvailableModels.mockReset()
+    refreshCredentials.mockReset()
     copyToClipboard.mockReset()
     getAvailableModels.mockResolvedValue([])
+    refreshCredentials.mockResolvedValue(makeWindsurfAccount())
     Object.defineProperty(window, 'matchMedia', {
       value: vi.fn().mockImplementation(() => ({
         matches: true,
@@ -122,8 +126,8 @@ describe('Windsurf account ops', () => {
     })
     global.fetch = vi.fn().mockResolvedValue(
       createStreamResponse([
-        'data: {"type":"test_start","model":"windsurf-probe"}\n',
-        'data: {"type":"content","text":"plan=pro models=2 credits=12.50"}\n',
+        'data: {"type":"test_start","model":"gpt-4.1"}\n',
+        'data: {"type":"content","text":"hello from windsurf"}\n',
         'data: {"type":"test_complete","success":true}\n'
       ])
     ) as any
@@ -175,7 +179,18 @@ describe('Windsurf account ops', () => {
     expect(wrapper.text()).toContain('allowed-models-2')
   })
 
-  it('falls back to a probe model when windsurf catalog is empty', async () => {
+  it('refreshes windsurf catalog and tests with a real model when catalog is initially empty', async () => {
+    getAvailableModels
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'gpt-4.1',
+          type: 'model',
+          display_name: 'gpt-4.1',
+          created_at: ''
+        }
+      ])
+
     const wrapper = mount(AccountTestModal, {
       props: {
         show: false,
@@ -197,10 +212,12 @@ describe('Windsurf account ops', () => {
 
     await wrapper.setProps({ show: true })
     await flushPromises()
+    await flushPromises()
 
     const startButton = wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))
     expect(startButton).toBeTruthy()
     expect(startButton!.attributes('disabled')).toBeUndefined()
+    expect(refreshCredentials).toHaveBeenCalledWith(42)
 
     await startButton!.trigger('click')
     await flushPromises()
@@ -209,7 +226,7 @@ describe('Windsurf account ops', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1)
     const [, request] = (global.fetch as any).mock.calls[0]
     expect(JSON.parse(request.body)).toEqual({
-      model_id: 'windsurf-probe',
+      model_id: 'gpt-4.1',
       prompt: ''
     })
   })

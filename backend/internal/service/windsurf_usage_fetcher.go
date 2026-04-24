@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -70,13 +71,13 @@ type windsurfJSONRequest struct {
 type windsurfUserStatusResponse struct {
 	UserStatus struct {
 		PlanStatus struct {
-			DailyQuotaRemainingPercent  float64 `json:"dailyQuotaRemainingPercent"`
-			WeeklyQuotaRemainingPercent float64 `json:"weeklyQuotaRemainingPercent"`
-			DailyQuotaResetAtUnix       int64   `json:"dailyQuotaResetAtUnix"`
-			WeeklyQuotaResetAtUnix      int64   `json:"weeklyQuotaResetAtUnix"`
-			OverageBalanceMicros        float64 `json:"overageBalanceMicros"`
-			AvailablePromptCredits      float64 `json:"availablePromptCredits"`
-			AvailableFlexCredits        float64 `json:"availableFlexCredits"`
+			DailyQuotaRemainingPercent  float64               `json:"dailyQuotaRemainingPercent"`
+			WeeklyQuotaRemainingPercent float64               `json:"weeklyQuotaRemainingPercent"`
+			DailyQuotaResetAtUnix       windsurfFlexibleInt64 `json:"dailyQuotaResetAtUnix"`
+			WeeklyQuotaResetAtUnix      windsurfFlexibleInt64 `json:"weeklyQuotaResetAtUnix"`
+			OverageBalanceMicros        float64               `json:"overageBalanceMicros"`
+			AvailablePromptCredits      float64               `json:"availablePromptCredits"`
+			AvailableFlexCredits        float64               `json:"availableFlexCredits"`
 			PlanInfo                    struct {
 				PlanName        string `json:"planName"`
 				HasPaidFeatures bool   `json:"hasPaidFeatures"`
@@ -142,8 +143,8 @@ func (f *WindsurfUsageFetcher) GetUserStatus(ctx context.Context, req WindsurfFe
 		HasPaidFeatures:        hasPaidFeatures,
 		DailyRemainingPercent:  planStatus.DailyQuotaRemainingPercent,
 		WeeklyRemainingPercent: planStatus.WeeklyQuotaRemainingPercent,
-		DailyResetAt:           unixTimePtr(planStatus.DailyQuotaResetAtUnix),
-		WeeklyResetAt:          unixTimePtr(planStatus.WeeklyQuotaResetAtUnix),
+		DailyResetAt:           unixTimePtr(int64(planStatus.DailyQuotaResetAtUnix)),
+		WeeklyResetAt:          unixTimePtr(int64(planStatus.WeeklyQuotaResetAtUnix)),
 		CreditBalance:          creditBalance,
 	}, nil
 }
@@ -279,4 +280,29 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+type windsurfFlexibleInt64 int64
+
+func (i *windsurfFlexibleInt64) UnmarshalJSON(data []byte) error {
+	value := strings.TrimSpace(string(data))
+	if value == "" || value == "null" {
+		*i = 0
+		return nil
+	}
+
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		value = strings.TrimSpace(value[1 : len(value)-1])
+		if value == "" {
+			*i = 0
+			return nil
+		}
+	}
+
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse windsurf int %q: %w", value, err)
+	}
+	*i = windsurfFlexibleInt64(parsed)
+	return nil
 }

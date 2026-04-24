@@ -269,6 +269,17 @@ const sortTestModels = (models: ClaudeModel[]) => {
   })
 }
 
+const loadWindsurfModels = async () => {
+  if (!props.account) return []
+
+  let models = await adminAPI.accounts.getAvailableModels(props.account.id)
+  if (props.account.platform === 'windsurf' && models.length === 0) {
+    await adminAPI.accounts.refreshCredentials(props.account.id)
+    models = await adminAPI.accounts.getAvailableModels(props.account.id)
+  }
+  return models
+}
+
 // Load available models when modal opens
 watch(
   () => props.show,
@@ -295,7 +306,7 @@ const loadAvailableModels = async () => {
   loadingModels.value = true
   selectedModelId.value = '' // Reset selection before loading
   try {
-    const models = await adminAPI.accounts.getAvailableModels(props.account.id)
+    const models = await loadWindsurfModels()
     availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
       ? sortTestModels(models)
       : models

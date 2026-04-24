@@ -14,10 +14,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -60,6 +62,7 @@ type AccountTestService struct {
 	geminiTokenProvider       *GeminiTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
 	windsurfAccountProbe      *WindsurfAccountProbeService
+	windsurfChatBridge        windsurfChatBridge
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
 	tlsFPProfileService       *TLSFingerprintProfileService
@@ -71,6 +74,7 @@ func NewAccountTestService(
 	geminiTokenProvider *GeminiTokenProvider,
 	antigravityGatewayService *AntigravityGatewayService,
 	windsurfAccountProbe *WindsurfAccountProbeService,
+	windsurfChatBridge windsurfChatBridge,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
 	tlsFPProfileService *TLSFingerprintProfileService,
@@ -80,6 +84,7 @@ func NewAccountTestService(
 		geminiTokenProvider:       geminiTokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
 		windsurfAccountProbe:      windsurfAccountProbe,
+		windsurfChatBridge:        windsurfChatBridge,
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
 		tlsFPProfileService:       tlsFPProfileService,
@@ -192,13 +197,21 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 }
 
 func (s *AccountTestService) testWindsurfAccountConnection(c *gin.Context, account *Account, modelID string) error {
-	if s.windsurfAccountProbe == nil {
-		return s.sendErrorAndEnd(c, "Windsurf probe service not configured")
+	if s.windsurfChatBridge == nil {
+		return s.sendErrorAndEnd(c, "Windsurf chat bridge not configured")
 	}
 
-	testModelID := strings.TrimSpace(modelID)
-	if testModelID == "" {
-		testModelID = "windsurf-probe"
+	testModelID, err := resolveWindsurfTestModelID(account, modelID)
+	if err != nil {
+		return s.sendErrorAndEnd(c, "No Windsurf test model available")
+	}
+	resolvedModel, err := resolveWindsurfAccountModel(account, testModelID)
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Windsurf model is not supported for this account")
+	}
+	req, err := createWindsurfTestPayload(testModelID)
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create Windsurf test payload")
 	}
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -209,20 +222,78 @@ func (s *AccountTestService) testWindsurfAccountConnection(c *gin.Context, accou
 
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
 
-	refreshed, err := s.windsurfAccountProbe.ProbeAndPersist(c.Request.Context(), account.ID)
+	result, err := s.windsurfChatBridge.Complete(c.Request.Context(), account, resolvedModel, req)
 	if err != nil {
 		return s.sendErrorAndEnd(c, err.Error())
 	}
 
-	summary := fmt.Sprintf(
-		"plan=%s models=%d credits=%.2f",
-		refreshed.GetWindsurfPlanTier(),
-		len(refreshed.GetWindsurfAllowedModels()),
-		refreshed.GetWindsurfCreditBalance(),
-	)
-	s.sendEvent(c, TestEvent{Type: "content", Text: summary})
+	if result != nil {
+		if strings.TrimSpace(result.Reasoning) != "" {
+			s.sendEvent(c, TestEvent{Type: "content", Text: result.Reasoning})
+		}
+		if strings.TrimSpace(result.Text) != "" {
+			s.sendEvent(c, TestEvent{Type: "content", Text: result.Text})
+		}
+	}
 	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 	return nil
+}
+
+func createWindsurfTestPayload(modelID string) (*apicompat.ChatCompletionsRequest, error) {
+	content, err := json.Marshal("hi")
+	if err != nil {
+		return nil, err
+	}
+	return &apicompat.ChatCompletionsRequest{
+		Model: modelID,
+		Messages: []apicompat.ChatMessage{
+			{
+				Role:    "user",
+				Content: content,
+			},
+		},
+	}, nil
+}
+
+func resolveWindsurfTestModelID(account *Account, requestedModel string) (string, error) {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel != "" && requestedModel != "windsurf-probe" {
+		return requestedModel, nil
+	}
+
+	candidateSet := make(map[string]struct{})
+	for _, model := range windsurfModelsForAccount(account) {
+		if trimmed := strings.TrimSpace(model.ID); trimmed != "" {
+			candidateSet[trimmed] = struct{}{}
+		}
+	}
+	for _, model := range account.GetWindsurfAllowedModels() {
+		if trimmed := strings.TrimSpace(model); trimmed != "" {
+			candidateSet[trimmed] = struct{}{}
+		}
+	}
+	for _, model := range []string{
+		"claude-4-sonnet",
+		"gpt-4.1",
+		"gpt-4o",
+		"claude-3.7-sonnet",
+		"gemini-2.5-pro",
+	} {
+		candidateSet[model] = struct{}{}
+	}
+
+	candidates := make([]string, 0, len(candidateSet))
+	for model := range candidateSet {
+		candidates = append(candidates, model)
+	}
+	sort.Strings(candidates)
+
+	for _, candidate := range candidates {
+		if _, err := resolveWindsurfAccountModel(account, candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", ErrWindsurfModelNotSupported
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection

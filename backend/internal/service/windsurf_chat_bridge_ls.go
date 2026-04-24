@@ -9,8 +9,10 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -28,6 +30,7 @@ const (
 	windsurfSendCascadeMessagePath    = windsurfLanguageServerServicePath + "/SendUserCascadeMessage"
 	windsurfTrajectoryStepsPath       = windsurfLanguageServerServicePath + "/GetCascadeTrajectorySteps"
 	windsurfTrajectoryStatusPath      = windsurfLanguageServerServicePath + "/GetCascadeTrajectory"
+	windsurfTrajectoryMetadataPath    = windsurfLanguageServerServicePath + "/GetCascadeTrajectoryGeneratorMetadata"
 )
 
 type windsurfProtoField struct {
@@ -86,6 +89,7 @@ func (b *WindsurfChatBridge) streamLegacy(
 
 	payload := buildWindsurfRawGetChatMessageRequest(token, req.Messages, model.EnumValue, model.UpstreamModel, b.extensionVersion)
 	var result WindsurfBridgeResult
+	textSanitizer := newWindsurfPathSanitizeStream()
 	err := b.grpcStream(ctx, windsurfRawGetChatMessagePath, payload, func(message []byte) error {
 		parsed, err := parseWindsurfRawResponse(message)
 		if err != nil {
@@ -95,20 +99,33 @@ func (b *WindsurfChatBridge) streamLegacy(
 			if parsed.Text == "" {
 				return fmt.Errorf("windsurf raw chat returned error")
 			}
-			return errors.New(strings.TrimSpace(parsed.Text))
+			return errors.New(strings.TrimSpace(sanitizeWindsurfText(parsed.Text)))
 		}
 		if parsed.Text == "" {
 			return nil
 		}
-		result.Text += parsed.Text
+		clean := textSanitizer.Feed(parsed.Text)
+		if clean == "" {
+			return nil
+		}
+		result.Text += clean
 		if emit != nil {
-			return emit(WindsurfBridgeStreamChunk{Text: parsed.Text})
+			return emit(WindsurfBridgeStreamChunk{Text: clean})
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	if tail := textSanitizer.Flush(); tail != "" {
+		result.Text += tail
+		if emit != nil {
+			if err := emit(WindsurfBridgeStreamChunk{Text: tail}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	estimateWindsurfUsageFallback(req, &result)
 	return &result, nil
 }
 
@@ -145,31 +162,67 @@ func (b *WindsurfChatBridge) runCascade(
 	if token == "" {
 		return nil, fmt.Errorf("windsurf token is empty")
 	}
-
-	sessionID := uuid.NewString()
-	_, _ = b.grpcUnary(ctx, windsurfInitPanelStatePath, buildWindsurfInitializePanelStateRequest(token, sessionID, b.extensionVersion))
-	_, _ = b.grpcUnary(ctx, windsurfAddWorkspacePath, buildWindsurfAddTrackedWorkspaceRequest(b.workspaceDir))
-	_, _ = b.grpcUnary(ctx, windsurfWorkspaceTrustPath, buildWindsurfUpdateWorkspaceTrustRequest(token, sessionID, true, b.extensionVersion))
-
-	cascadeIDResp, err := b.grpcUnary(ctx, windsurfStartCascadePath, buildWindsurfStartCascadeRequest(token, sessionID, b.extensionVersion))
+	cascadeReq := normalizeWindsurfChatRequestForCascade(req)
+	toolPreamble := buildWindsurfToolPreambleForProto(windsurfRequestTools(req), windsurfEffectiveToolChoice(req))
+	sessionID, _, err := b.ensureWindsurfCascadeSession(ctx, account, token, false)
 	if err != nil {
 		return nil, err
 	}
-	cascadeID, err := parseWindsurfStartCascadeResponse(cascadeIDResp)
-	if err != nil {
-		return nil, err
+	reuse := windsurfConversationReuseFromContext(ctx)
+	cascadeID := ""
+	if reuse != nil && reuse.Entry != nil && reuse.Entry.AccountID == account.ID {
+		if reuse.Entry.EndpointKey == "" || reuse.Entry.EndpointKey == strings.TrimSpace(b.baseURL) {
+			sessionID = firstNonEmptyString(strings.TrimSpace(reuse.Entry.SessionID), sessionID)
+			cascadeID = strings.TrimSpace(reuse.Entry.CascadeID)
+		}
 	}
 	if cascadeID == "" {
-		return nil, fmt.Errorf("windsurf start cascade returned empty cascade id")
+		cascadeIDResp, err := b.grpcUnary(ctx, windsurfStartCascadePath, buildWindsurfStartCascadeRequest(token, sessionID, b.extensionVersion))
+		if err != nil {
+			return nil, err
+		}
+		cascadeID, err = parseWindsurfStartCascadeResponse(cascadeIDResp)
+		if err != nil {
+			return nil, err
+		}
+		if cascadeID == "" {
+			return nil, fmt.Errorf("windsurf start cascade returned empty cascade id")
+		}
 	}
 
-	inputText := buildWindsurfCascadeInputText(req.Messages)
-	if _, err := b.grpcUnary(
-		ctx,
-		windsurfSendCascadeMessagePath,
-		buildWindsurfSendCascadeMessageRequest(token, cascadeID, inputText, model.EnumValue, model.ModelUID, sessionID, b.extensionVersion),
-	); err != nil {
-		return nil, err
+	inputText, inputImages := buildWindsurfCascadeInput(cascadeReq.Messages, cascadeID != "" && reuse != nil && reuse.Entry != nil)
+	sendMessage := func() error {
+		_, err := b.grpcUnary(
+			ctx,
+			windsurfSendCascadeMessagePath,
+			buildWindsurfSendCascadeMessageRequest(token, cascadeID, inputText, model.EnumValue, model.ModelUID, sessionID, b.extensionVersion, toolPreamble, inputImages),
+		)
+		return err
+	}
+	if err := sendMessage(); err != nil {
+		if !windsurfPanelStateMissing(err) {
+			return nil, err
+		}
+		sessionID, _, err = b.ensureWindsurfCascadeSession(ctx, account, token, true)
+		if err != nil {
+			return nil, err
+		}
+		cascadeID = ""
+		inputText, inputImages = buildWindsurfCascadeInput(cascadeReq.Messages, false)
+		cascadeIDResp, startErr := b.grpcUnary(ctx, windsurfStartCascadePath, buildWindsurfStartCascadeRequest(token, sessionID, b.extensionVersion))
+		if startErr != nil {
+			return nil, startErr
+		}
+		cascadeID, err = parseWindsurfStartCascadeResponse(cascadeIDResp)
+		if err != nil {
+			return nil, err
+		}
+		if cascadeID == "" {
+			return nil, fmt.Errorf("windsurf start cascade returned empty cascade id")
+		}
+		if err := sendMessage(); err != nil {
+			return nil, err
+		}
 	}
 
 	var (
@@ -179,6 +232,27 @@ func (b *WindsurfChatBridge) runCascade(
 		sawActive         bool
 		idleCount         int
 	)
+	textSanitizer := newWindsurfPathSanitizeStream()
+	thinkingSanitizer := newWindsurfPathSanitizeStream()
+	flushSanitized := func() error {
+		if tail := thinkingSanitizer.Flush(); tail != "" {
+			result.Reasoning += tail
+			if emit != nil {
+				if err := emit(WindsurfBridgeStreamChunk{Reasoning: tail}); err != nil {
+					return err
+				}
+			}
+		}
+		if tail := textSanitizer.Flush(); tail != "" {
+			result.Text += tail
+			if emit != nil {
+				if err := emit(WindsurfBridgeStreamChunk{Text: tail}); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
 
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
@@ -199,7 +273,7 @@ func (b *WindsurfChatBridge) runCascade(
 
 		for idx, step := range steps {
 			if strings.TrimSpace(step.ErrorText) != "" {
-				return nil, errors.New(strings.TrimSpace(step.ErrorText))
+				return nil, errors.New(strings.TrimSpace(sanitizeWindsurfText(step.ErrorText)))
 			}
 			liveThinking := step.Thinking
 			if liveThinking != "" {
@@ -207,10 +281,13 @@ func (b *WindsurfChatBridge) runCascade(
 				if len(liveThinking) > prev {
 					delta := liveThinking[prev:]
 					thinkCursorByStep[idx] = len(liveThinking)
-					result.Reasoning += delta
-					if emit != nil {
-						if err := emit(WindsurfBridgeStreamChunk{Reasoning: delta}); err != nil {
-							return nil, err
+					clean := thinkingSanitizer.Feed(delta)
+					if clean != "" {
+						result.Reasoning += clean
+						if emit != nil {
+							if err := emit(WindsurfBridgeStreamChunk{Reasoning: clean}); err != nil {
+								return nil, err
+							}
 						}
 					}
 				}
@@ -227,10 +304,13 @@ func (b *WindsurfChatBridge) runCascade(
 			if len(liveText) > prev {
 				delta := liveText[prev:]
 				textCursorByStep[idx] = len(liveText)
-				result.Text += delta
-				if emit != nil {
-					if err := emit(WindsurfBridgeStreamChunk{Text: delta}); err != nil {
-						return nil, err
+				clean := textSanitizer.Feed(delta)
+				if clean != "" {
+					result.Text += clean
+					if emit != nil {
+						if err := emit(WindsurfBridgeStreamChunk{Text: clean}); err != nil {
+							return nil, err
+						}
 					}
 				}
 			}
@@ -252,15 +332,287 @@ func (b *WindsurfChatBridge) runCascade(
 		if sawActive {
 			idleCount++
 			if idleCount >= 2 {
+				if err := flushSanitized(); err != nil {
+					return nil, err
+				}
+				estimateWindsurfUsageFallback(req, &result)
+				if usage, ok := b.fetchWindsurfGeneratorMetadata(ctx, cascadeID); ok {
+					result.Usage = usage
+				}
+				result.conversation = &windsurfConversationResult{
+					CascadeID:   cascadeID,
+					SessionID:   sessionID,
+					EndpointKey: strings.TrimSpace(b.baseURL),
+				}
 				return &result, nil
 			}
 		}
 	}
 
+	if err := flushSanitized(); err != nil {
+		return nil, err
+	}
 	if result.Text == "" && result.Reasoning == "" {
 		return nil, fmt.Errorf("windsurf cascade request timed out")
 	}
+	estimateWindsurfUsageFallback(req, &result)
+	if usage, ok := b.fetchWindsurfGeneratorMetadata(ctx, cascadeID); ok {
+		result.Usage = usage
+	}
+	result.conversation = &windsurfConversationResult{
+		CascadeID:   cascadeID,
+		SessionID:   sessionID,
+		EndpointKey: strings.TrimSpace(b.baseURL),
+	}
 	return &result, nil
+}
+
+type windsurfCascadeSessionState struct {
+	mu          sync.Mutex
+	sessionID   string
+	workspace   string
+	initialized bool
+}
+
+func (b *WindsurfChatBridge) ensureWindsurfCascadeSession(ctx context.Context, account *Account, apiKey string, force bool) (string, string, error) {
+	if b == nil {
+		return "", "", ErrWindsurfChatBridgeUnavailable
+	}
+	state := b.loadWindsurfCascadeSessionState(account, apiKey)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if force {
+		state.initialized = false
+		state.sessionID = ""
+	}
+	if strings.TrimSpace(state.sessionID) == "" {
+		state.sessionID = uuid.NewString()
+	}
+	if strings.TrimSpace(state.workspace) == "" {
+		state.workspace = resolveWindsurfCascadeWorkspacePath(account, apiKey, b.workspaceDir)
+	}
+	if state.initialized {
+		return state.sessionID, state.workspace, nil
+	}
+
+	_, _ = b.grpcUnary(ctx, windsurfInitPanelStatePath, buildWindsurfInitializePanelStateRequest(apiKey, state.sessionID, b.extensionVersion))
+	_, _ = b.grpcUnary(ctx, windsurfAddWorkspacePath, buildWindsurfAddTrackedWorkspaceRequest(state.workspace))
+	_, _ = b.grpcUnary(ctx, windsurfWorkspaceTrustPath, buildWindsurfUpdateWorkspaceTrustRequest(apiKey, state.sessionID, true, b.extensionVersion))
+
+	state.initialized = true
+	return state.sessionID, state.workspace, nil
+}
+
+func (b *WindsurfChatBridge) loadWindsurfCascadeSessionState(account *Account, apiKey string) *windsurfCascadeSessionState {
+	key := windsurfCascadeSessionKey(account, apiKey)
+	if existing, ok := b.cascadeSessions.Load(key); ok {
+		if state, ok := existing.(*windsurfCascadeSessionState); ok && state != nil {
+			return state
+		}
+	}
+	state := &windsurfCascadeSessionState{}
+	actual, _ := b.cascadeSessions.LoadOrStore(key, state)
+	if loaded, ok := actual.(*windsurfCascadeSessionState); ok && loaded != nil {
+		return loaded
+	}
+	return state
+}
+
+func windsurfCascadeSessionKey(account *Account, apiKey string) string {
+	if account != nil && account.ID > 0 {
+		return fmt.Sprintf("acct:%d", account.ID)
+	}
+	token := strings.TrimSpace(apiKey)
+	if token == "" {
+		return "acct:anonymous"
+	}
+	if len(token) > 12 {
+		token = token[:12]
+	}
+	return "token:" + token
+}
+
+func resolveWindsurfCascadeWorkspacePath(account *Account, apiKey string, configured string) string {
+	suffix := windsurfCascadeWorkspaceSuffix(account, apiKey)
+	base := strings.TrimSpace(configured)
+	if base == "" {
+		return "/home/user/projects/workspace-" + suffix
+	}
+	base = filepath.ToSlash(base)
+	base = strings.TrimRight(base, "/")
+	lowerBase := strings.ToLower(filepath.Base(base))
+	if strings.HasPrefix(lowerBase, "workspace-") && lowerBase != "windsurf-workspace" {
+		return base
+	}
+	return base + "/workspace-" + suffix
+}
+
+func windsurfCascadeWorkspaceSuffix(account *Account, apiKey string) string {
+	if account != nil && account.ID > 0 {
+		return fmt.Sprintf("account-%d", account.ID)
+	}
+	return sanitizeWindsurfWorkspaceSuffix(apiKey)
+}
+
+func sanitizeWindsurfWorkspaceSuffix(apiKey string) string {
+	token := strings.TrimSpace(apiKey)
+	if len(token) > 8 {
+		token = token[:8]
+	}
+	if token == "" {
+		token = "default"
+	}
+	var builder strings.Builder
+	for _, ch := range token {
+		switch {
+		case ch == '-' || ch == '_' || ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z':
+			builder.WriteRune(ch)
+		default:
+			builder.WriteByte('x')
+		}
+	}
+	if builder.Len() == 0 {
+		return "default"
+	}
+	return strings.ToLower(builder.String())
+}
+
+func windsurfPanelStateMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "panel state not found") || (strings.Contains(msg, "not_found") && strings.Contains(msg, "panel"))
+}
+
+func buildWindsurfCascadeInput(messages []apicompat.ChatMessage, resume bool) (string, []string) {
+	systemMessages := make([]string, 0, len(messages))
+	conversation := make([]apicompat.ChatMessage, 0, len(messages))
+	for _, msg := range messages {
+		switch strings.TrimSpace(strings.ToLower(msg.Role)) {
+		case "system":
+			text := strings.TrimSpace(windsurfChatContentToString(msg.Content))
+			if text != "" {
+				systemMessages = append(systemMessages, text)
+			}
+		case "user", "assistant":
+			conversation = append(conversation, msg)
+		}
+	}
+
+	systemPrefix := strings.Join(systemMessages, "\n\n")
+	if resume && len(conversation) > 0 {
+		last := conversation[len(conversation)-1]
+		text, images := extractWindsurfCascadeMessage(last.Content)
+		if systemPrefix != "" {
+			text = systemPrefix + "\n\n" + text
+		}
+		return text, images
+	}
+
+	text := buildWindsurfCascadeInputText(messages)
+	return text, nil
+}
+
+func extractWindsurfCascadeMessage(raw json.RawMessage) (string, []string) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var plain string
+	if err := json.Unmarshal(raw, &plain); err == nil {
+		return plain, nil
+	}
+	var parts []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		lines := make([]string, 0, len(parts))
+		images := make([]string, 0, len(parts))
+		for _, part := range parts {
+			switch strings.TrimSpace(strings.ToLower(part.Type)) {
+			case "text":
+				if strings.TrimSpace(part.Text) != "" {
+					lines = append(lines, part.Text)
+				}
+			case "image_url":
+				if part.ImageURL != nil && strings.TrimSpace(part.ImageURL.URL) != "" {
+					images = append(images, strings.TrimSpace(part.ImageURL.URL))
+				}
+			}
+		}
+		return strings.Join(lines, "\n"), images
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+func (b *WindsurfChatBridge) fetchWindsurfGeneratorMetadata(ctx context.Context, cascadeID string) (WindsurfBridgeUsage, bool) {
+	cascadeID = strings.TrimSpace(cascadeID)
+	if cascadeID == "" {
+		return WindsurfBridgeUsage{}, false
+	}
+	buf, err := b.grpcUnary(ctx, windsurfTrajectoryMetadataPath, buildWindsurfGeneratorMetadataRequest(cascadeID, 0))
+	if err != nil {
+		return WindsurfBridgeUsage{}, false
+	}
+	usage, err := parseWindsurfGeneratorMetadata(buf)
+	if err != nil {
+		return WindsurfBridgeUsage{}, false
+	}
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CacheReadTokens == 0 && usage.CacheCreationTokens == 0 {
+		return WindsurfBridgeUsage{}, false
+	}
+	return usage, true
+}
+
+func estimateWindsurfUsageFallback(req *apicompat.ChatCompletionsRequest, result *WindsurfBridgeResult) {
+	if req == nil || result == nil {
+		return
+	}
+	if result.Usage.InputTokens > 0 ||
+		result.Usage.OutputTokens > 0 ||
+		result.Usage.CacheCreationTokens > 0 ||
+		result.Usage.CacheReadTokens > 0 ||
+		result.Usage.ImageOutputTokens > 0 {
+		return
+	}
+
+	inputBuilder := strings.Builder{}
+	for _, msg := range req.Messages {
+		text := strings.TrimSpace(windsurfChatContentToString(msg.Content))
+		if text != "" {
+			if inputBuilder.Len() > 0 {
+				inputBuilder.WriteString("\n")
+			}
+			inputBuilder.WriteString(text)
+		}
+		for _, call := range msg.ToolCalls {
+			name := strings.TrimSpace(call.Function.Name)
+			args := strings.TrimSpace(call.Function.Arguments)
+			if name == "" && args == "" {
+				continue
+			}
+			if inputBuilder.Len() > 0 {
+				inputBuilder.WriteString("\n")
+			}
+			if name != "" {
+				inputBuilder.WriteString(name)
+			}
+			if args != "" {
+				if name != "" {
+					inputBuilder.WriteString(" ")
+				}
+				inputBuilder.WriteString(args)
+			}
+		}
+	}
+
+	result.Usage.InputTokens = estimateTokensForText(inputBuilder.String())
+	result.Usage.OutputTokens = estimateTokensForText(result.Text) + estimateTokensForText(result.Reasoning)
 }
 
 func (b *WindsurfChatBridge) grpcUnary(ctx context.Context, rpcPath string, payload []byte) ([]byte, error) {
@@ -352,7 +704,7 @@ func (b *WindsurfChatBridge) doGRPCRequest(ctx context.Context, rpcPath string, 
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("call windsurf grpc %s: %w", rpcPath, err)
+		return nil, b.formatGRPCRequestError(rpcPath, err)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
 		defer func() { _ = resp.Body.Close() }()
@@ -360,6 +712,51 @@ func (b *WindsurfChatBridge) doGRPCRequest(ctx context.Context, rpcPath string, 
 		return nil, fmt.Errorf("windsurf grpc %s returned %d: %s", rpcPath, resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 	return resp, nil
+}
+
+func (b *WindsurfChatBridge) formatGRPCRequestError(rpcPath string, err error) error {
+	if err == nil {
+		return nil
+	}
+	baseURL := ""
+	if b != nil {
+		baseURL = strings.TrimSpace(b.baseURL)
+	}
+	if isWindsurfLocalLSUnavailable(baseURL, err) {
+		return fmt.Errorf(
+			"call windsurf grpc %s: Windsurf language server is not running at %s. Install or mount the LS binary, make sure it is started, or set WINDSURF_LS_ADDR to a reachable server: %w",
+			rpcPath,
+			firstNonEmptyString(baseURL, "http://127.0.0.1:42100"),
+			err,
+		)
+	}
+	return fmt.Errorf("call windsurf grpc %s: %w", rpcPath, err)
+}
+
+func isWindsurfLocalLSUnavailable(baseURL string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if !windsurfTargetsLoopback(baseURL) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "actively refused") ||
+		strings.Contains(msg, "connectex") ||
+		strings.Contains(msg, "cannot assign requested address")
+}
+
+func windsurfTargetsLoopback(baseURL string) bool {
+	if strings.TrimSpace(baseURL) == "" {
+		return true
+	}
+	parsed, err := neturl.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
 func buildWindsurfRawGetChatMessageRequest(apiKey string, messages []apicompat.ChatMessage, modelEnum int, modelName string, version string) []byte {
@@ -425,30 +822,53 @@ func buildWindsurfUpdateWorkspaceTrustRequest(apiKey, sessionID string, trusted 
 }
 
 func buildWindsurfStartCascadeRequest(apiKey, sessionID, version string) []byte {
-	return appendProtoMessageField(nil, 1, buildWindsurfMetadata(apiKey, sessionID, version))
-}
-
-func buildWindsurfSendCascadeMessageRequest(apiKey, cascadeID, text string, modelEnum int, modelUID, sessionID, version string) []byte {
-	out := appendProtoStringField(nil, 1, cascadeID)
-	out = appendProtoMessageField(out, 2, appendProtoStringField(nil, 1, text))
-	out = appendProtoMessageField(out, 3, buildWindsurfMetadata(apiKey, sessionID, version))
-	out = appendProtoMessageField(out, 5, buildWindsurfCascadeConfig(modelEnum, modelUID))
+	out := appendProtoMessageField(nil, 1, buildWindsurfMetadata(apiKey, sessionID, version))
+	out = appendProtoVarintField(out, 4, 1)
+	out = appendProtoVarintField(out, 5, 1)
 	return out
 }
 
-func buildWindsurfCascadeConfig(modelEnum int, modelUID string) []byte {
+func buildWindsurfSendCascadeMessageRequest(apiKey, cascadeID, text string, modelEnum int, modelUID, sessionID, version string, toolPreamble string, images []string) []byte {
+	out := appendProtoStringField(nil, 1, cascadeID)
+	out = appendProtoMessageField(out, 2, appendProtoStringField(nil, 1, text))
+	out = appendProtoMessageField(out, 3, buildWindsurfMetadata(apiKey, sessionID, version))
+	for _, image := range images {
+		if strings.TrimSpace(image) == "" {
+			continue
+		}
+		out = appendProtoStringField(out, 6, strings.TrimSpace(image))
+	}
+	out = appendProtoMessageField(out, 5, buildWindsurfCascadeConfig(modelEnum, modelUID, toolPreamble))
+	return out
+}
+
+func buildWindsurfCascadeConfig(modelEnum int, modelUID string, toolPreamble string) []byte {
 	conversation := appendProtoVarintField(nil, 4, 3)
-	noToolSection := appendProtoVarintField(nil, 1, 1)
-	noToolSection = appendProtoStringField(noToolSection, 2, "No tools are available.")
-	conversation = appendProtoMessageField(conversation, 10, noToolSection)
+	if strings.TrimSpace(toolPreamble) != "" {
+		additional := appendProtoVarintField(nil, 1, 1)
+		additional = appendProtoStringField(additional, 2, toolPreamble+"\n\nThe functions listed above are available and callable. When a function is relevant, emit the exact <tool_call> JSON block.")
+		conversation = appendProtoMessageField(conversation, 12, additional)
 
-	additional := appendProtoVarintField(nil, 1, 1)
-	additional = appendProtoStringField(additional, 2, "You have no tools, no file access, and no command execution. Answer all questions directly using your knowledge.")
-	conversation = appendProtoMessageField(conversation, 12, additional)
+		toolSection := appendProtoVarintField(nil, 1, 1)
+		toolSection = appendProtoStringField(toolSection, 2, toolPreamble)
+		conversation = appendProtoMessageField(conversation, 10, toolSection)
 
-	communication := appendProtoVarintField(nil, 1, 1)
-	communication = appendProtoStringField(communication, 2, "You are accessed via API, not inside an IDE. Answer directly and never reveal server infrastructure details.")
-	conversation = appendProtoMessageField(conversation, 13, communication)
+		communication := appendProtoVarintField(nil, 1, 1)
+		communication = appendProtoStringField(communication, 2, "You are accessed via API. Respond in the same language as the user. Use the functions above when relevant.")
+		conversation = appendProtoMessageField(conversation, 13, communication)
+	} else {
+		noToolSection := appendProtoVarintField(nil, 1, 1)
+		noToolSection = appendProtoStringField(noToolSection, 2, "No tools are available.")
+		conversation = appendProtoMessageField(conversation, 10, noToolSection)
+
+		additional := appendProtoVarintField(nil, 1, 1)
+		additional = appendProtoStringField(additional, 2, "You have no tools, no file access, and no command execution. Answer all questions directly using your knowledge.")
+		conversation = appendProtoMessageField(conversation, 12, additional)
+
+		communication := appendProtoVarintField(nil, 1, 1)
+		communication = appendProtoStringField(communication, 2, "You are accessed via API, not inside an IDE. Answer directly and never reveal server infrastructure details.")
+		conversation = appendProtoMessageField(conversation, 13, communication)
+	}
 
 	planner := appendProtoMessageField(nil, 2, conversation)
 	if strings.TrimSpace(modelUID) != "" {
@@ -459,11 +879,14 @@ func buildWindsurfCascadeConfig(modelEnum int, modelUID string) []byte {
 		planner = appendProtoMessageField(planner, 15, appendProtoVarintField(nil, 1, uint64(modelEnum)))
 		planner = appendProtoVarintField(planner, 1, uint64(modelEnum))
 	}
+	planner = appendProtoVarintField(planner, 6, 32768)
 
 	brain := appendProtoBoolField(nil, 1, true)
 	brain = appendProtoMessageField(brain, 6, appendProtoMessageField(nil, 6, nil))
+	memory := appendProtoBoolField(nil, 1, false)
 
 	out := appendProtoMessageField(nil, 1, planner)
+	out = appendProtoMessageField(out, 5, memory)
 	out = appendProtoMessageField(out, 7, brain)
 	return out
 }
@@ -478,6 +901,14 @@ func buildWindsurfTrajectoryStepsRequest(cascadeID string, offset int) []byte {
 
 func buildWindsurfTrajectoryStatusRequest(cascadeID string) []byte {
 	return appendProtoStringField(nil, 1, cascadeID)
+}
+
+func buildWindsurfGeneratorMetadataRequest(cascadeID string, offset int) []byte {
+	out := appendProtoStringField(nil, 1, cascadeID)
+	if offset > 0 {
+		out = appendProtoVarintField(out, 2, uint64(offset))
+	}
+	return out
 }
 
 func buildWindsurfMetadata(apiKey, sessionID, version string) []byte {
@@ -645,6 +1076,50 @@ func parseWindsurfTrajectoryStatus(buf []byte) (uint64, error) {
 		return field.U64, nil
 	}
 	return 0, nil
+}
+
+func parseWindsurfGeneratorMetadata(buf []byte) (WindsurfBridgeUsage, error) {
+	fields, err := parseWindsurfProtoFields(buf)
+	if err != nil {
+		return WindsurfBridgeUsage{}, err
+	}
+	entries := findAllWindsurfProtoFields(fields, 1, protowire.BytesType)
+	var usage WindsurfBridgeUsage
+	for _, entry := range entries {
+		entryFields, err := parseWindsurfProtoFields(entry.Bytes)
+		if err != nil {
+			return WindsurfBridgeUsage{}, err
+		}
+		chatModel := findWindsurfProtoField(entryFields, 1, protowire.BytesType)
+		if chatModel == nil {
+			continue
+		}
+		chatModelFields, err := parseWindsurfProtoFields(chatModel.Bytes)
+		if err != nil {
+			return WindsurfBridgeUsage{}, err
+		}
+		usageField := findWindsurfProtoField(chatModelFields, 4, protowire.BytesType)
+		if usageField == nil {
+			continue
+		}
+		usageFields, err := parseWindsurfProtoFields(usageField.Bytes)
+		if err != nil {
+			return WindsurfBridgeUsage{}, err
+		}
+		if field := findWindsurfProtoField(usageFields, 2, protowire.VarintType); field != nil {
+			usage.InputTokens += int(field.U64)
+		}
+		if field := findWindsurfProtoField(usageFields, 3, protowire.VarintType); field != nil {
+			usage.OutputTokens += int(field.U64)
+		}
+		if field := findWindsurfProtoField(usageFields, 4, protowire.VarintType); field != nil {
+			usage.CacheCreationTokens += int(field.U64)
+		}
+		if field := findWindsurfProtoField(usageFields, 5, protowire.VarintType); field != nil {
+			usage.CacheReadTokens += int(field.U64)
+		}
+	}
+	return usage, nil
 }
 
 func parseWindsurfTrajectorySteps(buf []byte) ([]windsurfTrajectoryStep, error) {

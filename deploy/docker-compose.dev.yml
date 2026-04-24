@@ -40,10 +40,13 @@ services:
       - JWT_SECRET=${JWT_SECRET:-}
       - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:-}
       - TZ=${TZ:-Asia/Shanghai}
+      - WINDSURF_LS_ADDR=http://windsurf-ls:42100
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      windsurf-ls:
         condition: service_healthy
     networks:
       - sub2api-network
@@ -53,6 +56,30 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  windsurf-ls:
+    build:
+      context: ..
+      dockerfile: deploy/windsurf-ls/Dockerfile
+    container_name: sub2api-windsurf-ls-dev
+    restart: unless-stopped
+    volumes:
+      - ./windsurf/opt:/opt/windsurf
+      - ./windsurf/tmp:/tmp/windsurf-workspace
+    environment:
+      - WINDSURF_LS_PORT=42100
+      - WINDSURF_LS_BINARY_PATH=/opt/windsurf/language_server_linux_x64
+      - WINDSURF_LS_DATA_DIR=/opt/windsurf/data
+      - WINDSURF_LS_WORKSPACE_DIR=/tmp/windsurf-workspace
+      - WINDSURF_LS_AUTO_SETUP=1
+    networks:
+      - sub2api-network
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 42100"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
 
   postgres:
     image: postgres:18-alpine

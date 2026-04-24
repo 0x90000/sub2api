@@ -84,6 +84,60 @@ const antigravityModels = [
   'tab_flash_lite_preview'
 ]
 
+const windsurfModels = [
+  'claude-3.5-sonnet',
+  'claude-3.7-sonnet',
+  'claude-4-sonnet',
+  'claude-4-opus',
+  'claude-4.1-opus',
+  'claude-4.5-haiku',
+  'claude-4.5-sonnet',
+  'claude-4.5-opus',
+  'claude-sonnet-4.6',
+  'claude-sonnet-4.6-thinking',
+  'claude-opus-4.6',
+  'claude-opus-4.6-thinking',
+  'claude-opus-4-7-medium',
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gpt-4.1',
+  'gpt-4.1-mini',
+  'gpt-4.1-nano',
+  'gpt-5',
+  'gpt-5-mini',
+  'gpt-5-codex',
+  'gpt-5.2',
+  'gpt-5.2-low',
+  'gpt-5.2-high',
+  'gpt-5.2-xhigh',
+  'gpt-5.3-codex',
+  'gpt-5.4-none',
+  'gpt-5.4-low',
+  'gpt-5.4-medium',
+  'gpt-5.4-high',
+  'gpt-5.4-xhigh',
+  'o3-mini',
+  'o3',
+  'o4-mini',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-3.0-pro',
+  'gemini-3.0-flash',
+  'gemini-3.1-pro-low',
+  'gemini-3.1-pro-high',
+  'deepseek-v3',
+  'deepseek-v3-2',
+  'deepseek-r1',
+  'grok-3',
+  'grok-3-mini',
+  'swe-1.5',
+  'swe-1.5-fast',
+  'swe-1.6',
+  'swe-1.6-fast',
+  'arena-fast',
+  'arena-smart'
+]
+
 // 智谱 GLM
 const zhipuModels = [
   'glm-4', 'glm-4v', 'glm-4-plus', 'glm-4-0520',
@@ -214,6 +268,7 @@ const allModelsList: string[] = [
   ...openaiModels,
   ...claudeModels,
   ...geminiModels,
+  ...windsurfModels,
   ...zhipuModels,
   ...qwenModels,
   ...deepseekModels,
@@ -361,7 +416,7 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'claude': return claudeModels
     case 'gemini': return geminiModels
     case 'antigravity': return antigravityModels
-    case 'windsurf': return []
+    case 'windsurf': return windsurfModels
     case 'zhipu': return zhipuModels
     case 'qwen': return qwenModels
     case 'deepseek': return deepseekModels

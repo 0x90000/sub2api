@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 )
@@ -74,7 +76,7 @@ func TestWindsurfResponsesBridge_NonStreamResponseUsesMessagesConversion(t *test
 	if resp.Output[1].Type != "message" || len(resp.Output[1].Content) != 1 || resp.Output[1].Content[0].Text != "hello from responses" {
 		t.Fatal("expected message output item")
 	}
-	if resp.Usage == nil || resp.Usage.InputTokens != 12 || resp.Usage.OutputTokens != 34 || resp.Usage.TotalTokens != 46 {
+	if resp.Usage == nil || resp.Usage.InputTokens != 17 || resp.Usage.OutputTokens != 34 || resp.Usage.TotalTokens != 51 {
 		t.Fatal("expected responses usage to be mapped")
 	}
 	if resp.Usage.InputTokensDetails == nil || resp.Usage.InputTokensDetails.CachedTokens != 5 {
@@ -97,6 +99,81 @@ func TestWindsurfResponsesBridge_NonStreamResponseUsesMessagesConversion(t *test
 	}
 }
 
+func TestWindsurfResponsesBridge_NonStreamReusesCascadeAfterFunctionOutput(t *testing.T) {
+	oldPool := defaultWindsurfConversationPool
+	defaultWindsurfConversationPool = newWindsurfConversationPool(time.Minute, 8)
+	defer func() { defaultWindsurfConversationPool = oldPool }()
+
+	bridge := &windsurfChatBridgeStub{
+		completeResult: &WindsurfBridgeResult{
+			ToolCalls: []apicompat.ChatToolCall{{
+				ID:   "call_1",
+				Type: "function",
+				Function: apicompat.ChatFunctionCall{
+					Name:      "Bash",
+					Arguments: `{"command":"pwd"}`,
+				},
+			}},
+			conversation: &windsurfConversationResult{
+				CascadeID:   "cascade-responses-1",
+				SessionID:   "session-responses-1",
+				EndpointKey: "",
+			},
+		},
+	}
+	svc := &WindsurfGatewayService{
+		accountRepo: windsurfGatewayAccountRepoStub{
+			accounts: []Account{{
+				ID:       53,
+				Platform: PlatformWindsurf,
+				Type:     AccountTypeAPIKey,
+				Extra: map[string]any{
+					"allowed_models": []any{"claude-4-sonnet"},
+				},
+			}},
+		},
+		chatBridge: bridge,
+	}
+
+	tools := []apicompat.ResponsesTool{{
+		Type:       "function",
+		Name:       "Bash",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+	}}
+	firstReq := &apicompat.ResponsesRequest{
+		Model: "claude-sonnet-4-20250514",
+		Tools: tools,
+		Input: json.RawMessage(`[{"role":"user","content":"run pwd"}]`),
+	}
+	if _, _, err := svc.CompleteResponsesWithMetadata(context.Background(), nil, firstReq); err != nil {
+		t.Fatalf("first CompleteResponsesWithMetadata() error = %v", err)
+	}
+
+	secondReq := &apicompat.ResponsesRequest{
+		Model: firstReq.Model,
+		Tools: tools,
+		Input: json.RawMessage(`[
+			{"role":"user","content":"run pwd"},
+			{"type":"function_call","call_id":"call_1","name":"Bash","arguments":"{\"command\":\"pwd\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"}
+		]`),
+	}
+	if _, _, err := svc.CompleteResponsesWithMetadata(context.Background(), nil, secondReq); err != nil {
+		t.Fatalf("second CompleteResponsesWithMetadata() error = %v", err)
+	}
+
+	if len(bridge.completeReuse) != 2 {
+		t.Fatalf("bridge complete calls = %d, want 2", len(bridge.completeReuse))
+	}
+	reuse := bridge.completeReuse[1]
+	if reuse == nil || reuse.Entry == nil {
+		t.Fatalf("second call reuse context = %#v, want checked-out cascade", reuse)
+	}
+	if reuse.Entry.CascadeID != "cascade-responses-1" || reuse.Entry.SessionID != "session-responses-1" || reuse.Entry.AccountID != 53 {
+		t.Fatalf("reuse entry = %+v, want original responses cascade/session/account", reuse.Entry)
+	}
+}
+
 func TestWindsurfResponsesBridge_StreamResponseEmitsResponsesEvents(t *testing.T) {
 	bridge := &windsurfChatBridgeStub{
 		streamChunks: []WindsurfBridgeStreamChunk{
@@ -107,8 +184,10 @@ func TestWindsurfResponsesBridge_StreamResponseEmitsResponsesEvents(t *testing.T
 		streamResult: &WindsurfBridgeResult{
 			RequestID: "resp_test_stream",
 			Usage: WindsurfBridgeUsage{
-				InputTokens:  7,
-				OutputTokens: 9,
+				InputTokens:       7,
+				OutputTokens:      9,
+				CacheReadTokens:   5,
+				ImageOutputTokens: 2,
 			},
 		},
 	}
@@ -180,7 +259,10 @@ func TestWindsurfResponsesBridge_StreamResponseEmitsResponsesEvents(t *testing.T
 	}
 
 	completed := events[len(events)-1].Response
-	if completed == nil || completed.Usage == nil || completed.Usage.TotalTokens != 16 {
+	if completed == nil || completed.Usage == nil || completed.Usage.InputTokens != 12 || completed.Usage.OutputTokens != 11 || completed.Usage.TotalTokens != 23 {
 		t.Fatal("expected completed event usage to be populated")
+	}
+	if completed.Usage.InputTokensDetails == nil || completed.Usage.InputTokensDetails.CachedTokens != 5 {
+		t.Fatal("expected completed event cached token usage to be populated")
 	}
 }

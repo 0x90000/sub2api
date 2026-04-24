@@ -147,6 +147,36 @@ func (s *WindsurfOAuthService) RefreshToken(ctx context.Context, refreshToken st
 	}, nil
 }
 
+func (s *WindsurfOAuthService) ResolveRuntimeToken(ctx context.Context, token string, proxyID *int64) (*WindsurfTokenInfo, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, infraerrors.BadRequest("WINDSURF_TOKEN_REQUIRED", "windsurf token is required")
+	}
+
+	proxyURL, err := s.resolveProxyURL(ctx, proxyID)
+	if err != nil {
+		return nil, err
+	}
+
+	runtimeProbeErr := s.probeRuntimeToken(ctx, token, proxyURL)
+	if runtimeProbeErr == nil {
+		return &WindsurfTokenInfo{
+			Token: token,
+		}, nil
+	}
+
+	runtimeToken, displayName, apiServerURL, err := s.registerRuntimeToken(ctx, token, proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("windsurf token is neither a valid runtime api key nor an exchangeable auth token: probe=%v register=%w", runtimeProbeErr, err)
+	}
+
+	return &WindsurfTokenInfo{
+		Token:        runtimeToken,
+		DisplayName:  displayName,
+		APIServerURL: apiServerURL,
+	}, nil
+}
+
 func (s *WindsurfOAuthService) RefreshAccountToken(ctx context.Context, account *Account) (*WindsurfTokenInfo, error) {
 	if account == nil {
 		return nil, infraerrors.BadRequest("WINDSURF_OAUTH_ACCOUNT_REQUIRED", "account is required")
@@ -331,6 +361,47 @@ func (s *WindsurfOAuthService) registerRuntimeToken(ctx context.Context, idToken
 		return "", "", "", fmt.Errorf("windsurf runtime token registration returned empty api_key")
 	}
 	return token, strings.TrimSpace(respBody.Name), strings.TrimSpace(respBody.APIServerURL), nil
+}
+
+func (s *WindsurfOAuthService) probeRuntimeToken(ctx context.Context, token, proxyURL string) error {
+	body, err := json.Marshal(windsurfJSONRequest{
+		Metadata: windsurfJSONMetadata{
+			APIKey:           token,
+			IDEName:          "windsurf",
+			IDEVersion:       "1.108.2",
+			ExtensionName:    "windsurf",
+			ExtensionVersion: "1.108.2",
+			Locale:           "en",
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal windsurf runtime token probe payload: %w", err)
+	}
+
+	var lastErr error
+	for _, host := range windsurfServerHosts {
+		endpoint := "https://" + host + windsurfUserStatusPath
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("build windsurf runtime token probe request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Connect-Protocol-Version", "1")
+		req.Header.Set("User-Agent", windsurfUserAgent)
+
+		var out map[string]any
+		if err := s.doJSON(req, proxyURL, &out); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("all windsurf runtime token probe hosts failed")
+	}
+	return lastErr
 }
 
 func (s *WindsurfOAuthService) doJSON(req *http.Request, proxyURL string, out any) error {

@@ -110,6 +110,8 @@ backend/data/
 backend/config.yaml
 deploy/config.yaml
 backend/.installed
+deploy/windsurf/opt/
+deploy/windsurf/tmp/
 
 # ===================
 # 其他

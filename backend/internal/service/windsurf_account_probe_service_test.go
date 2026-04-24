@@ -106,6 +106,66 @@ func TestWindsurfAccountProbePersistsAccountSnapshot(t *testing.T) {
 	}
 }
 
+func TestWindsurfAccountProbeAcceptsStringResetTimestamps(t *testing.T) {
+	repo := &windsurfProbeAccountRepoStub{
+		account: &Account{
+			ID:          43,
+			Platform:    PlatformWindsurf,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{"token": "ws-token"},
+			Extra:       map[string]any{},
+			Concurrency: 1,
+		},
+	}
+	upstream := &windsurfProbeHTTPUpstreamStub{
+		responses: map[string]*http.Response{
+			"https://server.self-serve.windsurf.com/exa.seat_management_pb.SeatManagementService/GetUserStatus": {
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(`{
+					"userStatus": {
+						"planStatus": {
+							"overageBalanceMicros": 12500000,
+							"dailyQuotaRemainingPercent": 77,
+							"weeklyQuotaRemainingPercent": 52,
+							"dailyQuotaResetAtUnix": "1767225600",
+							"weeklyQuotaResetAtUnix": "1767484800"
+						}
+					}
+				}`)),
+			},
+			"https://server.self-serve.windsurf.com/exa.api_server_pb.ApiServerService/GetCascadeModelConfigs": {
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"clientModelConfigs":[]}`)),
+			},
+			"https://server.self-serve.windsurf.com/exa.api_server_pb.ApiServerService/CheckUserMessageRateLimit": {
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"hasCapacity":true,"messagesRemaining":8,"maxMessages":20}`)),
+			},
+		},
+	}
+
+	usageFetcher := NewWindsurfUsageFetcher(upstream)
+	service := NewWindsurfAccountProbeService(repo, &windsurfProbeProxyRepoStub{}, usageFetcher)
+
+	account, err := service.ProbeAndPersist(context.Background(), 43)
+	if err != nil {
+		t.Fatalf("ProbeAndPersist() error = %v", err)
+	}
+
+	if got := account.GetWindsurfCreditBalance(); got != 12.5 {
+		t.Fatalf("credit_balance = %v, want %v", got, 12.5)
+	}
+	if got := account.GetExtraString("daily_reset_at"); got == "" {
+		t.Fatal("expected daily_reset_at to be persisted")
+	}
+	if got := account.GetExtraString("weekly_reset_at"); got == "" {
+		t.Fatal("expected weekly_reset_at to be persisted")
+	}
+	if got := parseExtraFloat64(account.Extra["daily_remaining_percent"]); got != 77 {
+		t.Fatalf("daily_remaining_percent = %v, want %v", got, 77.0)
+	}
+}
+
 type windsurfProbeAccountRepoStub struct {
 	account       *Account
 	rateLimitedAt *time.Time

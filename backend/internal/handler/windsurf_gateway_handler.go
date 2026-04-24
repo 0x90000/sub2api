@@ -57,6 +57,7 @@ func (h *WindsurfGatewayHandler) Messages(c *gin.Context) {
 	if apiKey != nil && apiKey.Group != nil {
 		groupID = &apiKey.Group.ID
 	}
+	requestCtx := service.WithWindsurfConversationScope(c.Request.Context(), service.WindsurfConversationScopeFromAPIKey(apiKey))
 
 	if req.Stream {
 		c.Header("Content-Type", "text/event-stream")
@@ -71,7 +72,7 @@ func (h *WindsurfGatewayHandler) Messages(c *gin.Context) {
 			return
 		}
 
-		metadata, err := h.service.StreamMessagesWithMetadata(c.Request.Context(), groupID, &req, func(event apicompat.AnthropicStreamEvent) error {
+		metadata, err := h.service.StreamMessagesWithMetadata(requestCtx, groupID, &req, func(event apicompat.AnthropicStreamEvent) error {
 			sse, err := apicompat.ResponsesAnthropicEventToSSE(event)
 			if err != nil {
 				return err
@@ -92,7 +93,7 @@ func (h *WindsurfGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	resp, metadata, err := h.service.CompleteMessagesWithMetadata(c.Request.Context(), groupID, &req)
+	resp, metadata, err := h.service.CompleteMessagesWithMetadata(requestCtx, groupID, &req)
 	if err != nil {
 		h.writeAnthropicError(c, err)
 		return
@@ -139,6 +140,7 @@ func (h *WindsurfGatewayHandler) Responses(c *gin.Context) {
 	if apiKey != nil && apiKey.Group != nil {
 		groupID = &apiKey.Group.ID
 	}
+	requestCtx := service.WithWindsurfConversationScope(c.Request.Context(), service.WindsurfConversationScopeFromAPIKey(apiKey))
 
 	if req.Stream {
 		c.Header("Content-Type", "text/event-stream")
@@ -153,7 +155,7 @@ func (h *WindsurfGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 
-		metadata, err := h.service.StreamResponsesWithMetadata(c.Request.Context(), groupID, &req, func(event apicompat.ResponsesStreamEvent) error {
+		metadata, err := h.service.StreamResponsesWithMetadata(requestCtx, groupID, &req, func(event apicompat.ResponsesStreamEvent) error {
 			sse, err := apicompat.ResponsesEventToSSE(event)
 			if err != nil {
 				return err
@@ -174,7 +176,7 @@ func (h *WindsurfGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	resp, metadata, err := h.service.CompleteResponsesWithMetadata(c.Request.Context(), groupID, &req)
+	resp, metadata, err := h.service.CompleteResponsesWithMetadata(requestCtx, groupID, &req)
 	if err != nil {
 		h.writeResponsesError(c, err)
 		return
@@ -225,6 +227,7 @@ func (h *WindsurfGatewayHandler) ChatCompletions(c *gin.Context) {
 	if apiKey != nil && apiKey.Group != nil {
 		groupID = &apiKey.Group.ID
 	}
+	requestCtx := service.WithWindsurfConversationScope(c.Request.Context(), service.WindsurfConversationScopeFromAPIKey(apiKey))
 
 	if req.Stream {
 		c.Header("Content-Type", "text/event-stream")
@@ -239,7 +242,7 @@ func (h *WindsurfGatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 
-		metadata, err := h.service.StreamChatCompletionsWithMetadata(c.Request.Context(), groupID, &req, func(chunk apicompat.ChatCompletionsChunk) error {
+		metadata, err := h.service.StreamChatCompletionsWithMetadata(requestCtx, groupID, &req, func(chunk apicompat.ChatCompletionsChunk) error {
 			sse, err := apicompat.ChatChunkToSSE(chunk)
 			if err != nil {
 				return err
@@ -264,7 +267,7 @@ func (h *WindsurfGatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	resp, metadata, err := h.service.CompleteChatCompletionsWithMetadata(c.Request.Context(), groupID, &req)
+	resp, metadata, err := h.service.CompleteChatCompletionsWithMetadata(requestCtx, groupID, &req)
 	if err != nil {
 		h.writeChatError(c, err)
 		return

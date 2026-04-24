@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"golang.org/x/net/http2"
@@ -23,6 +24,7 @@ type WindsurfChatBridge struct {
 	workspaceDir     string
 	extensionVersion string
 	httpClient       *http.Client
+	cascadeSessions  sync.Map
 }
 
 func NewWindsurfChatBridge() *WindsurfChatBridge {

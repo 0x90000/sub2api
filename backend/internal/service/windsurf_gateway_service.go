@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,12 +34,16 @@ type WindsurfBridgeResult struct {
 	RequestID string
 	Text      string
 	Reasoning string
+	ToolCalls []apicompat.ChatToolCall
 	Usage     WindsurfBridgeUsage
+
+	conversation *windsurfConversationResult
 }
 
 type WindsurfBridgeStreamChunk struct {
 	Text      string
 	Reasoning string
+	ToolCalls []apicompat.ChatToolCall
 }
 
 type WindsurfBridgeUsage struct {
@@ -250,15 +255,16 @@ func (s *WindsurfGatewayService) CompleteChatCompletionsWithMetadata(
 	if req == nil {
 		return nil, nil, ErrWindsurfModelNotSupported
 	}
-	selection, err := s.SelectChatCompletionAccount(ctx, groupID, req.Model)
+	selection, nextCtx, err := s.selectChatCompletionAccountForRequest(ctx, groupID, req)
 	if err != nil {
 		return nil, nil, err
 	}
-	return s.completeChatCompletionsWithSelection(ctx, req.Model, req, selection)
+	return s.completeChatCompletionsWithSelection(nextCtx, groupID, req.Model, req, selection)
 }
 
 func (s *WindsurfGatewayService) completeChatCompletionsWithSelection(
 	ctx context.Context,
+	groupID *int64,
 	requestedModel string,
 	req *apicompat.ChatCompletionsRequest,
 	selection *WindsurfAccountSelection,
@@ -274,10 +280,28 @@ func (s *WindsurfGatewayService) completeChatCompletionsWithSelection(
 	}
 
 	startedAt := time.Now()
+	cacheScope := windsurfCacheScope(groupID, selection)
+	if cached, ok := defaultWindsurfResponseCache.Get(req, cacheScope); ok {
+		restoreWindsurfConversationReuse(ctx)
+		metadata := &WindsurfExecutionMetadata{
+			RequestedModel: requestedModel,
+			UpstreamModel:  selection.Model.UpstreamModel,
+			Usage:          cached.Usage,
+			Duration:       time.Since(startedAt),
+			Stream:         false,
+			Account:        selection.Account,
+		}
+		return buildWindsurfChatCompletionResponse(requestedModel, cached), metadata, nil
+	}
+
 	result, err := s.chatBridge.Complete(ctx, selection.Account, selection.Model, req)
 	if err != nil {
+		restoreWindsurfConversationReuse(ctx)
 		return nil, nil, err
 	}
+	result = normalizeWindsurfBridgeResult(req, result)
+	checkinWindsurfConversation(ctx, req, selection, result)
+	defaultWindsurfResponseCache.Set(req, cacheScope, result)
 
 	metadata := &WindsurfExecutionMetadata{
 		RequestedModel: requestedModel,
@@ -312,15 +336,16 @@ func (s *WindsurfGatewayService) StreamChatCompletionsWithMetadata(
 	if req == nil {
 		return nil, ErrWindsurfModelNotSupported
 	}
-	selection, err := s.SelectChatCompletionAccount(ctx, groupID, req.Model)
+	selection, nextCtx, err := s.selectChatCompletionAccountForRequest(ctx, groupID, req)
 	if err != nil {
 		return nil, err
 	}
-	return s.streamChatCompletionsWithSelection(ctx, req.Model, req, selection, emit)
+	return s.streamChatCompletionsWithSelection(nextCtx, groupID, req.Model, req, selection, emit)
 }
 
 func (s *WindsurfGatewayService) streamChatCompletionsWithSelection(
 	ctx context.Context,
+	groupID *int64,
 	requestedModel string,
 	req *apicompat.ChatCompletionsRequest,
 	selection *WindsurfAccountSelection,
@@ -343,6 +368,8 @@ func (s *WindsurfGatewayService) streamChatCompletionsWithSelection(
 	streamID := newWindsurfChatCompletionID()
 	createdAt := time.Now().Unix()
 	sentRole := false
+	textSanitizer := newWindsurfPathSanitizeStream()
+	reasoningSanitizer := newWindsurfPathSanitizeStream()
 
 	sendRole := func() error {
 		if sentRole {
@@ -408,21 +435,183 @@ func (s *WindsurfGatewayService) streamChatCompletionsWithSelection(
 		})
 	}
 
-	finalResult, err := s.chatBridge.Stream(ctx, selection.Account, selection.Model, req, func(chunk WindsurfBridgeStreamChunk) error {
-		if err := sendReasoning(chunk.Reasoning); err != nil {
-			return err
+	cacheScope := windsurfCacheScope(groupID, selection)
+	if cached, ok := defaultWindsurfResponseCache.Get(req, cacheScope); ok {
+		restoreWindsurfConversationReuse(ctx)
+		if err := sendRole(); err != nil {
+			return nil, err
 		}
-		return sendText(chunk.Text)
-	})
-	if err != nil {
-		return nil, err
+		if err := sendReasoning(cached.Reasoning); err != nil {
+			return nil, err
+		}
+		if err := sendText(cached.Text); err != nil {
+			return nil, err
+		}
+		finishReason := "stop"
+		if err := emit(apicompat.ChatCompletionsChunk{
+			ID:      streamID,
+			Object:  "chat.completion.chunk",
+			Created: createdAt,
+			Model:   requestedModel,
+			Choices: []apicompat.ChatChunkChoice{{
+				Index:        0,
+				Delta:        apicompat.ChatDelta{},
+				FinishReason: &finishReason,
+			}},
+		}); err != nil {
+			return nil, err
+		}
+		if req.StreamOptions != nil && req.StreamOptions.IncludeUsage {
+			if err := emit(apicompat.ChatCompletionsChunk{
+				ID:      streamID,
+				Object:  "chat.completion.chunk",
+				Created: createdAt,
+				Model:   requestedModel,
+				Choices: []apicompat.ChatChunkChoice{},
+				Usage:   buildWindsurfChatUsage(cached.Usage),
+			}); err != nil {
+				return nil, err
+			}
+		}
+		return &WindsurfExecutionMetadata{
+			RequestedModel: requestedModel,
+			UpstreamModel:  selection.Model.UpstreamModel,
+			Usage:          cached.Usage,
+			Duration:       time.Since(startedAt),
+			Stream:         true,
+			Account:        selection.Account,
+		}, nil
 	}
 
-	if finalResult != nil {
+	sendToolCall := func(call apicompat.ChatToolCall, index int) error {
+		if err := sendRole(); err != nil {
+			return err
+		}
+		call.Index = &index
+		if call.Type == "" {
+			call.Type = "function"
+		}
+		return emit(apicompat.ChatCompletionsChunk{
+			ID:      streamID,
+			Object:  "chat.completion.chunk",
+			Created: createdAt,
+			Model:   requestedModel,
+			Choices: []apicompat.ChatChunkChoice{{
+				Index: 0,
+				Delta: apicompat.ChatDelta{
+					ToolCalls: []apicompat.ChatToolCall{call},
+				},
+				FinishReason: nil,
+			}},
+		})
+	}
+
+	parser := &windsurfToolCallParser{}
+	parseToolCalls := selection.Model.ModelUID != "" && windsurfShouldOfferTools(req)
+	collectedToolCalls := make([]apicompat.ChatToolCall, 0)
+	sawBridgeOutput := false
+
+	processText := func(text string) error {
+		if text == "" {
+			return nil
+		}
+		text = textSanitizer.Feed(text)
+		if text == "" {
+			return nil
+		}
+		if !parseToolCalls {
+			return sendText(text)
+		}
+		safeText, calls := parser.Feed(text)
+		if err := sendText(safeText); err != nil {
+			return err
+		}
+		for _, call := range calls {
+			index := len(collectedToolCalls)
+			collectedToolCalls = append(collectedToolCalls, call)
+			if err := sendToolCall(call, index); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	finalResult, err := s.chatBridge.Stream(ctx, selection.Account, selection.Model, req, func(chunk WindsurfBridgeStreamChunk) error {
+		if chunk.Text != "" || chunk.Reasoning != "" || len(chunk.ToolCalls) > 0 {
+			sawBridgeOutput = true
+		}
+		if err := sendReasoning(reasoningSanitizer.Feed(chunk.Reasoning)); err != nil {
+			return err
+		}
+		if err := processText(chunk.Text); err != nil {
+			return err
+		}
+		for _, call := range chunk.ToolCalls {
+			call = sanitizeWindsurfToolCall(call)
+			index := len(collectedToolCalls)
+			collectedToolCalls = append(collectedToolCalls, call)
+			if err := sendToolCall(call, index); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		restoreWindsurfConversationReuse(ctx)
+		return nil, err
+	}
+	finalResult = normalizeWindsurfBridgeResult(req, finalResult)
+	checkinWindsurfConversation(ctx, req, selection, finalResult)
+
+	if finalResult != nil && !sawBridgeOutput {
 		if err := sendReasoning(finalResult.Reasoning); err != nil {
 			return nil, err
 		}
-		if err := sendText(finalResult.Text); err != nil {
+		if err := processText(finalResult.Text); err != nil {
+			return nil, err
+		}
+		for _, call := range finalResult.ToolCalls {
+			index := len(collectedToolCalls)
+			collectedToolCalls = append(collectedToolCalls, call)
+			if err := sendToolCall(call, index); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if parseToolCalls {
+		if err := sendReasoning(reasoningSanitizer.Flush()); err != nil {
+			return nil, err
+		}
+		sanitizedTail := textSanitizer.Flush()
+		safeText, calls := parser.Feed(sanitizedTail)
+		if err := sendText(safeText); err != nil {
+			return nil, err
+		}
+		for _, call := range calls {
+			call = sanitizeWindsurfToolCall(call)
+			index := len(collectedToolCalls)
+			collectedToolCalls = append(collectedToolCalls, call)
+			if err := sendToolCall(call, index); err != nil {
+				return nil, err
+			}
+		}
+		safeText, calls = parser.Flush()
+		if err := sendText(safeText); err != nil {
+			return nil, err
+		}
+		for _, call := range calls {
+			call = sanitizeWindsurfToolCall(call)
+			index := len(collectedToolCalls)
+			collectedToolCalls = append(collectedToolCalls, call)
+			if err := sendToolCall(call, index); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if err := sendReasoning(reasoningSanitizer.Flush()); err != nil {
+			return nil, err
+		}
+		if err := sendText(textSanitizer.Flush()); err != nil {
 			return nil, err
 		}
 	}
@@ -431,6 +620,9 @@ func (s *WindsurfGatewayService) streamChatCompletionsWithSelection(
 	}
 
 	finishReason := "stop"
+	if len(collectedToolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
 	if err := emit(apicompat.ChatCompletionsChunk{
 		ID:      streamID,
 		Object:  "chat.completion.chunk",
@@ -444,6 +636,18 @@ func (s *WindsurfGatewayService) streamChatCompletionsWithSelection(
 	}); err != nil {
 		return nil, err
 	}
+	if req.StreamOptions != nil && req.StreamOptions.IncludeUsage && finalResult != nil {
+		if err := emit(apicompat.ChatCompletionsChunk{
+			ID:      streamID,
+			Object:  "chat.completion.chunk",
+			Created: createdAt,
+			Model:   requestedModel,
+			Choices: []apicompat.ChatChunkChoice{},
+			Usage:   buildWindsurfChatUsage(finalResult.Usage),
+		}); err != nil {
+			return nil, err
+		}
+	}
 
 	metadata := &WindsurfExecutionMetadata{
 		RequestedModel: requestedModel,
@@ -456,7 +660,26 @@ func (s *WindsurfGatewayService) streamChatCompletionsWithSelection(
 		metadata.RequestID = strings.TrimSpace(finalResult.RequestID)
 		metadata.Usage = finalResult.Usage
 	}
+	if len(collectedToolCalls) == 0 {
+		defaultWindsurfResponseCache.Set(req, cacheScope, finalResult)
+	}
 	return metadata, nil
+}
+
+func windsurfCacheScope(groupID *int64, selection *WindsurfAccountSelection) windsurfResponseCacheScope {
+	var scope windsurfResponseCacheScope
+	if groupID != nil {
+		scope.GroupID = *groupID
+	}
+	if selection == nil {
+		return scope
+	}
+	if selection.Account != nil {
+		scope.AccountID = selection.Account.ID
+	}
+	scope.UpstreamModel = selection.Model.UpstreamModel
+	scope.ModelUID = selection.Model.ModelUID
+	return scope
 }
 
 func (s *WindsurfGatewayService) CompleteMessages(
@@ -476,15 +699,20 @@ func (s *WindsurfGatewayService) CompleteMessagesWithMetadata(
 	if req == nil {
 		return nil, nil, ErrWindsurfModelNotSupported
 	}
-	selection, err := s.SelectChatCompletionAccount(ctx, groupID, req.Model)
+	chatReq, err := convertWindsurfAnthropicToChatRequest(req)
 	if err != nil {
 		return nil, nil, err
 	}
-	return s.completeMessagesWithSelection(ctx, req, selection)
+	selection, nextCtx, err := s.selectChatCompletionAccountForRequest(ctx, groupID, chatReq)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s.completeMessagesWithChatRequest(nextCtx, groupID, req, chatReq, selection)
 }
 
 func (s *WindsurfGatewayService) completeMessagesWithSelection(
 	ctx context.Context,
+	groupID *int64,
 	req *apicompat.AnthropicRequest,
 	selection *WindsurfAccountSelection,
 ) (*apicompat.AnthropicResponse, *WindsurfExecutionMetadata, error) {
@@ -492,14 +720,28 @@ func (s *WindsurfGatewayService) completeMessagesWithSelection(
 	if err != nil {
 		return nil, nil, err
 	}
-	chatResp, metadata, err := s.completeChatCompletionsWithSelection(ctx, req.Model, chatReq, selection)
+	return s.completeMessagesWithChatRequest(ctx, groupID, req, chatReq, selection)
+}
+
+func (s *WindsurfGatewayService) completeMessagesWithChatRequest(
+	ctx context.Context,
+	groupID *int64,
+	req *apicompat.AnthropicRequest,
+	chatReq *apicompat.ChatCompletionsRequest,
+	selection *WindsurfAccountSelection,
+) (*apicompat.AnthropicResponse, *WindsurfExecutionMetadata, error) {
+	chatResp, metadata, err := s.completeChatCompletionsWithSelection(ctx, groupID, req.Model, chatReq, selection)
 	if err != nil {
 		return nil, nil, err
 	}
 	if metadata != nil {
 		metadata.RequestedModel = req.Model
 	}
-	return buildWindsurfAnthropicResponse(req.Model, chatResp), metadata, nil
+	resp := buildWindsurfAnthropicResponse(req.Model, chatResp)
+	if metadata != nil {
+		resp.Usage = *buildWindsurfAnthropicUsageFromMetadata(metadata)
+	}
+	return resp, metadata, nil
 }
 
 func (s *WindsurfGatewayService) StreamMessages(
@@ -521,15 +763,20 @@ func (s *WindsurfGatewayService) StreamMessagesWithMetadata(
 	if req == nil {
 		return nil, ErrWindsurfModelNotSupported
 	}
-	selection, err := s.SelectChatCompletionAccount(ctx, groupID, req.Model)
+	chatReq, err := convertWindsurfAnthropicToChatRequest(req)
 	if err != nil {
 		return nil, err
 	}
-	return s.streamMessagesWithSelection(ctx, req, selection, emit)
+	selection, nextCtx, err := s.selectChatCompletionAccountForRequest(ctx, groupID, chatReq)
+	if err != nil {
+		return nil, err
+	}
+	return s.streamMessagesWithChatRequest(nextCtx, groupID, req, chatReq, selection, emit)
 }
 
 func (s *WindsurfGatewayService) streamMessagesWithSelection(
 	ctx context.Context,
+	groupID *int64,
 	req *apicompat.AnthropicRequest,
 	selection *WindsurfAccountSelection,
 	emit func(apicompat.AnthropicStreamEvent) error,
@@ -541,7 +788,17 @@ func (s *WindsurfGatewayService) streamMessagesWithSelection(
 	if err != nil {
 		return nil, err
 	}
+	return s.streamMessagesWithChatRequest(ctx, groupID, req, chatReq, selection, emit)
+}
 
+func (s *WindsurfGatewayService) streamMessagesWithChatRequest(
+	ctx context.Context,
+	groupID *int64,
+	req *apicompat.AnthropicRequest,
+	chatReq *apicompat.ChatCompletionsRequest,
+	selection *WindsurfAccountSelection,
+	emit func(apicompat.AnthropicStreamEvent) error,
+) (*WindsurfExecutionMetadata, error) {
 	streamID := newWindsurfAnthropicMessageID()
 	started := false
 	emitStart := func() error {
@@ -567,62 +824,96 @@ func (s *WindsurfGatewayService) streamMessagesWithSelection(
 	}
 
 	type streamState struct {
-		reasoningIndex *int
-		textIndex      *int
+		currentIndex int
+		currentType  string
+		currentTool  string
+		nextIndex    int
+		stopReason   string
 	}
-	state := &streamState{}
+	state := &streamState{currentIndex: -1, stopReason: "end_turn"}
 
-	openReasoning := func() error {
+	closeCurrent := func() error {
+		if state.currentIndex < 0 {
+			return nil
+		}
+		idx := state.currentIndex
+		state.currentIndex = -1
+		state.currentType = ""
+		state.currentTool = ""
+		return emit(apicompat.AnthropicStreamEvent{
+			Type:  "content_block_stop",
+			Index: &idx,
+		})
+	}
+
+	openBlock := func(blockType string, block apicompat.AnthropicContentBlock) error {
 		if err := emitStart(); err != nil {
 			return err
 		}
-		if state.reasoningIndex != nil {
+		if state.currentType == blockType && state.currentIndex >= 0 {
 			return nil
 		}
-		index := 0
-		state.reasoningIndex = &index
+		if err := closeCurrent(); err != nil {
+			return err
+		}
+		index := state.nextIndex
+		state.nextIndex++
+		state.currentIndex = index
+		state.currentType = blockType
+		state.currentTool = ""
 		return emit(apicompat.AnthropicStreamEvent{
-			Type:  "content_block_start",
-			Index: &index,
-			ContentBlock: &apicompat.AnthropicContentBlock{
-				Type: "thinking",
-			},
+			Type:         "content_block_start",
+			Index:        &index,
+			ContentBlock: &block,
 		})
+	}
+
+	openReasoning := func() error {
+		return openBlock("thinking", apicompat.AnthropicContentBlock{Type: "thinking"})
 	}
 
 	openText := func() error {
-		if err := emitStart(); err != nil {
-			return err
-		}
-		if state.textIndex != nil {
-			return nil
-		}
-		index := 0
-		if state.reasoningIndex != nil {
-			index = 1
-		}
-		state.textIndex = &index
-		return emit(apicompat.AnthropicStreamEvent{
-			Type:  "content_block_start",
-			Index: &index,
-			ContentBlock: &apicompat.AnthropicContentBlock{
-				Type: "text",
-			},
-		})
+		return openBlock("text", apicompat.AnthropicContentBlock{Type: "text"})
 	}
 
-	metadata, err := s.streamChatCompletionsWithSelection(ctx, req.Model, chatReq, selection, func(chunk apicompat.ChatCompletionsChunk) error {
+	openTool := func(call apicompat.ChatToolCall) error {
+		key := call.ID
+		if key == "" && call.Index != nil {
+			key = strconv.Itoa(*call.Index)
+		}
+		if key != "" && state.currentType == "tool_use" && state.currentTool == key && state.currentIndex >= 0 {
+			return nil
+		}
+		if state.currentType == "tool_use" && state.currentIndex >= 0 {
+			if err := closeCurrent(); err != nil {
+				return err
+			}
+		}
+		if err := openBlock("tool_use", apicompat.AnthropicContentBlock{
+			Type:  "tool_use",
+			ID:    call.ID,
+			Name:  call.Function.Name,
+			Input: json.RawMessage(`{}`),
+		}); err != nil {
+			return err
+		}
+		state.currentTool = key
+		return nil
+	}
+
+	metadata, err := s.streamChatCompletionsWithSelection(ctx, groupID, req.Model, chatReq, selection, func(chunk apicompat.ChatCompletionsChunk) error {
 		if len(chunk.Choices) == 0 {
 			return nil
 		}
-		delta := chunk.Choices[0].Delta
+		choice := chunk.Choices[0]
+		delta := choice.Delta
 		if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
 			if err := openReasoning(); err != nil {
 				return err
 			}
 			return emit(apicompat.AnthropicStreamEvent{
 				Type:  "content_block_delta",
-				Index: state.reasoningIndex,
+				Index: &state.currentIndex,
 				Delta: &apicompat.AnthropicDelta{
 					Type:     "thinking_delta",
 					Thinking: *delta.ReasoningContent,
@@ -635,12 +926,32 @@ func (s *WindsurfGatewayService) streamMessagesWithSelection(
 			}
 			return emit(apicompat.AnthropicStreamEvent{
 				Type:  "content_block_delta",
-				Index: state.textIndex,
+				Index: &state.currentIndex,
 				Delta: &apicompat.AnthropicDelta{
 					Type: "text_delta",
 					Text: *delta.Content,
 				},
 			})
+		}
+		for _, call := range delta.ToolCalls {
+			if err := openTool(call); err != nil {
+				return err
+			}
+			if call.Function.Arguments != "" {
+				if err := emit(apicompat.AnthropicStreamEvent{
+					Type:  "content_block_delta",
+					Index: &state.currentIndex,
+					Delta: &apicompat.AnthropicDelta{
+						Type:        "input_json_delta",
+						PartialJSON: call.Function.Arguments,
+					},
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		if choice.FinishReason != nil {
+			state.stopReason = mapWindsurfChatFinishReasonToAnthropic(*choice.FinishReason)
 		}
 		return nil
 	})
@@ -648,21 +959,8 @@ func (s *WindsurfGatewayService) streamMessagesWithSelection(
 		return nil, err
 	}
 
-	if state.reasoningIndex != nil {
-		if err := emit(apicompat.AnthropicStreamEvent{
-			Type:  "content_block_stop",
-			Index: state.reasoningIndex,
-		}); err != nil {
-			return nil, err
-		}
-	}
-	if state.textIndex != nil {
-		if err := emit(apicompat.AnthropicStreamEvent{
-			Type:  "content_block_stop",
-			Index: state.textIndex,
-		}); err != nil {
-			return nil, err
-		}
+	if err := closeCurrent(); err != nil {
+		return nil, err
 	}
 
 	if err := emitStart(); err != nil {
@@ -671,12 +969,9 @@ func (s *WindsurfGatewayService) streamMessagesWithSelection(
 	if err := emit(apicompat.AnthropicStreamEvent{
 		Type: "message_delta",
 		Delta: &apicompat.AnthropicDelta{
-			StopReason: "end_turn",
+			StopReason: state.stopReason,
 		},
-		Usage: &apicompat.AnthropicUsage{
-			InputTokens:  0,
-			OutputTokens: 0,
-		},
+		Usage: buildWindsurfAnthropicUsageFromMetadata(metadata),
 	}); err != nil {
 		return nil, err
 	}
@@ -844,6 +1139,65 @@ func (s *WindsurfGatewayService) SelectChatCompletionAccount(
 	return &candidates[0], nil
 }
 
+func (s *WindsurfGatewayService) selectChatCompletionAccountForRequest(
+	ctx context.Context,
+	groupID *int64,
+	req *apicompat.ChatCompletionsRequest,
+) (*WindsurfAccountSelection, context.Context, error) {
+	if req == nil {
+		return nil, ctx, ErrWindsurfModelNotSupported
+	}
+	candidates, err := s.listChatCompletionAccountSelections(ctx, groupID, req.Model)
+	if err != nil {
+		return nil, ctx, err
+	}
+	if len(candidates) == 0 {
+		return nil, ctx, ErrWindsurfNoSchedulableAccounts
+	}
+
+	endpointKey := windsurfConversationEndpointKey(s.chatBridge)
+	scope := windsurfConversationScopeForRequest(ctx, groupID)
+	scopedCtx := WithWindsurfConversationScope(ctx, scope)
+	seenFingerprints := make(map[string]struct{}, len(candidates))
+	for i := range candidates {
+		if strings.TrimSpace(candidates[i].Model.ModelUID) == "" {
+			continue
+		}
+		modelKey := windsurfConversationModelKey(candidates[i].Model)
+		fingerprint := windsurfConversationFingerprintBefore(req.Messages, modelKey, scope)
+		if fingerprint == "" {
+			continue
+		}
+		if _, ok := seenFingerprints[fingerprint]; ok {
+			continue
+		}
+		seenFingerprints[fingerprint] = struct{}{}
+
+		entry, ok := defaultWindsurfConversationPool.Checkout(fingerprint)
+		if !ok || entry == nil {
+			continue
+		}
+
+		for j := range candidates {
+			if candidates[j].Account == nil || candidates[j].Account.ID != entry.AccountID {
+				continue
+			}
+			if entry.EndpointKey != "" && endpointKey != "" && entry.EndpointKey != endpointKey {
+				break
+			}
+			reuse := &windsurfConversationReuseContext{
+				BeforeFingerprint: fingerprint,
+				Entry:             entry,
+			}
+			return &candidates[j], withWindsurfConversationReuse(scopedCtx, reuse), nil
+		}
+
+		defaultWindsurfConversationPool.Checkin(fingerprint, entry)
+	}
+
+	return &candidates[0], scopedCtx, nil
+}
+
 func (s *WindsurfGatewayService) listChatCompletionAccountSelections(
 	ctx context.Context,
 	groupID *int64,
@@ -932,6 +1286,39 @@ func resolveWindsurfAccountModel(account *Account, requestedModel string) (Winds
 	return resolved, nil
 }
 
+func windsurfConversationEndpointKey(bridge windsurfChatBridge) string {
+	if concrete, ok := bridge.(*WindsurfChatBridge); ok && concrete != nil {
+		return strings.TrimSpace(concrete.baseURL)
+	}
+	return ""
+}
+
+func restoreWindsurfConversationReuse(ctx context.Context) {
+	reuse := windsurfConversationReuseFromContext(ctx)
+	if reuse == nil || reuse.Entry == nil || strings.TrimSpace(reuse.BeforeFingerprint) == "" {
+		return
+	}
+	defaultWindsurfConversationPool.Checkin(reuse.BeforeFingerprint, reuse.Entry)
+	reuse.Entry = nil
+}
+
+func checkinWindsurfConversation(ctx context.Context, req *apicompat.ChatCompletionsRequest, selection *WindsurfAccountSelection, result *WindsurfBridgeResult) {
+	if req == nil || selection == nil || selection.Account == nil || result == nil || result.conversation == nil {
+		return
+	}
+	scope := windsurfConversationScopeForRequest(ctx, nil)
+	fingerprint := windsurfConversationFingerprintAfter(req.Messages, windsurfConversationModelKey(selection.Model), scope)
+	if fingerprint == "" {
+		return
+	}
+	defaultWindsurfConversationPool.Checkin(fingerprint, &windsurfConversationPoolEntry{
+		CascadeID:   strings.TrimSpace(result.conversation.CascadeID),
+		SessionID:   strings.TrimSpace(result.conversation.SessionID),
+		AccountID:   selection.Account.ID,
+		EndpointKey: strings.TrimSpace(result.conversation.EndpointKey),
+	})
+}
+
 func windsurfAccountAllowsModel(account *Account, model string) bool {
 	if account == nil {
 		return false
@@ -973,7 +1360,46 @@ func buildWindsurfChatCompletionResponse(model string, result *WindsurfBridgeRes
 	if result.Reasoning != "" {
 		response.Choices[0].Message.ReasoningContent = result.Reasoning
 	}
+	if len(result.ToolCalls) > 0 {
+		response.Choices[0].Message.ToolCalls = result.ToolCalls
+		response.Choices[0].FinishReason = "tool_calls"
+	}
+	response.Usage = buildWindsurfChatUsage(result.Usage)
 	return response
+}
+
+func normalizeWindsurfBridgeResult(req *apicompat.ChatCompletionsRequest, result *WindsurfBridgeResult) *WindsurfBridgeResult {
+	if result == nil {
+		return nil
+	}
+	result.Text = sanitizeWindsurfText(result.Text)
+	result.Reasoning = sanitizeWindsurfText(result.Reasoning)
+	for i := range result.ToolCalls {
+		result.ToolCalls[i] = sanitizeWindsurfToolCall(result.ToolCalls[i])
+	}
+	if !windsurfShouldOfferTools(req) {
+		return result
+	}
+	text, calls := parseWindsurfToolCallsFromText(result.Text)
+	result.Text = text
+	for _, call := range calls {
+		result.ToolCalls = append(result.ToolCalls, sanitizeWindsurfToolCall(call))
+	}
+	return result
+}
+
+func buildWindsurfChatUsage(usage WindsurfBridgeUsage) *apicompat.ChatUsage {
+	promptTokens := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens
+	completionTokens := usage.OutputTokens + usage.ImageOutputTokens
+	out := &apicompat.ChatUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+	}
+	if usage.CacheReadTokens > 0 {
+		out.PromptTokensDetails = &apicompat.ChatTokenDetails{CachedTokens: usage.CacheReadTokens}
+	}
+	return out
 }
 
 func newWindsurfChatCompletionID() string {
@@ -1001,6 +1427,17 @@ func buildWindsurfAnthropicResponse(model string, chatResp *apicompat.ChatComple
 	}
 
 	message := chatResp.Choices[0].Message
+	resp.StopReason = mapWindsurfChatFinishReasonToAnthropic(chatResp.Choices[0].FinishReason)
+	if chatResp.Usage != nil {
+		resp.Usage = apicompat.AnthropicUsage{
+			InputTokens:              chatResp.Usage.PromptTokens,
+			OutputTokens:             chatResp.Usage.CompletionTokens,
+			CacheCreationInputTokens: 0,
+		}
+		if chatResp.Usage.PromptTokensDetails != nil {
+			resp.Usage.CacheReadInputTokens = chatResp.Usage.PromptTokensDetails.CachedTokens
+		}
+	}
 	if message.ReasoningContent != "" {
 		resp.Content = append(resp.Content, apicompat.AnthropicContentBlock{
 			Type:     "thinking",
@@ -1012,6 +1449,21 @@ func buildWindsurfAnthropicResponse(model string, chatResp *apicompat.ChatComple
 			Type: "text",
 			Text: text,
 		})
+	}
+	for _, call := range message.ToolCalls {
+		input := json.RawMessage(`{}`)
+		if strings.TrimSpace(call.Function.Arguments) != "" {
+			input = json.RawMessage(call.Function.Arguments)
+		}
+		resp.Content = append(resp.Content, apicompat.AnthropicContentBlock{
+			Type:  "tool_use",
+			ID:    call.ID,
+			Name:  call.Function.Name,
+			Input: input,
+		})
+	}
+	if len(resp.Content) == 0 {
+		resp.Content = append(resp.Content, apicompat.AnthropicContentBlock{Type: "text", Text: ""})
 	}
 	return resp
 }
@@ -1034,6 +1486,16 @@ func convertWindsurfAnthropicToChatRequest(req *apicompat.AnthropicRequest) (*ap
 		maxTokens := req.MaxTokens
 		chatReq.MaxTokens = &maxTokens
 	}
+	if len(req.StopSeqs) > 0 {
+		raw, _ := json.Marshal(req.StopSeqs)
+		chatReq.Stop = raw
+	}
+	if len(req.Tools) > 0 {
+		chatReq.Tools = convertWindsurfAnthropicToolsToChat(req.Tools)
+	}
+	if len(req.ToolChoice) > 0 {
+		chatReq.ToolChoice = convertWindsurfAnthropicToolChoice(req.ToolChoice)
+	}
 	if systemText := parseAnthropicSystemPromptText(req.System); systemText != "" {
 		raw, _ := json.Marshal(systemText)
 		chatReq.Messages = append(chatReq.Messages, apicompat.ChatMessage{
@@ -1042,14 +1504,202 @@ func convertWindsurfAnthropicToChatRequest(req *apicompat.AnthropicRequest) (*ap
 		})
 	}
 	for _, message := range req.Messages {
-		text := anthropicMessageContentText(message.Content)
-		raw, _ := json.Marshal(text)
-		chatReq.Messages = append(chatReq.Messages, apicompat.ChatMessage{
-			Role:    message.Role,
-			Content: raw,
-		})
+		chatReq.Messages = append(chatReq.Messages, convertWindsurfAnthropicMessageToChat(message)...)
 	}
 	return chatReq, nil
+}
+
+func mapWindsurfChatFinishReasonToAnthropic(reason string) string {
+	switch reason {
+	case "tool_calls":
+		return "tool_use"
+	case "length":
+		return "max_tokens"
+	default:
+		return "end_turn"
+	}
+}
+
+func buildWindsurfAnthropicUsageFromMetadata(metadata *WindsurfExecutionMetadata) *apicompat.AnthropicUsage {
+	if metadata == nil {
+		return &apicompat.AnthropicUsage{}
+	}
+	return &apicompat.AnthropicUsage{
+		InputTokens:              metadata.Usage.InputTokens,
+		OutputTokens:             metadata.Usage.OutputTokens + metadata.Usage.ImageOutputTokens,
+		CacheCreationInputTokens: metadata.Usage.CacheCreationTokens,
+		CacheReadInputTokens:     metadata.Usage.CacheReadTokens,
+	}
+}
+
+func convertWindsurfAnthropicToolsToChat(tools []apicompat.AnthropicTool) []apicompat.ChatTool {
+	out := make([]apicompat.ChatTool, 0, len(tools))
+	for _, tool := range tools {
+		if strings.TrimSpace(tool.Name) == "" {
+			continue
+		}
+		out = append(out, apicompat.ChatTool{
+			Type: "function",
+			Function: &apicompat.ChatFunction{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.InputSchema,
+			},
+		})
+	}
+	return out
+}
+
+func convertWindsurfAnthropicToolChoice(raw json.RawMessage) json.RawMessage {
+	var obj struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(raw, &obj) != nil {
+		return raw
+	}
+	switch obj.Type {
+	case "auto":
+		return json.RawMessage(`"auto"`)
+	case "any":
+		return json.RawMessage(`"required"`)
+	case "none":
+		return json.RawMessage(`"none"`)
+	case "tool":
+		converted, _ := json.Marshal(map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": obj.Name,
+			},
+		})
+		return converted
+	default:
+		return raw
+	}
+}
+
+func convertWindsurfAnthropicMessageToChat(message apicompat.AnthropicMessage) []apicompat.ChatMessage {
+	role := "user"
+	if message.Role == "assistant" {
+		role = "assistant"
+	}
+	if len(message.Content) == 0 {
+		return []apicompat.ChatMessage{{Role: role}}
+	}
+	var text string
+	if json.Unmarshal(message.Content, &text) == nil {
+		raw, _ := json.Marshal(text)
+		return []apicompat.ChatMessage{{Role: role, Content: raw}}
+	}
+	var blocks []apicompat.AnthropicContentBlock
+	if json.Unmarshal(message.Content, &blocks) != nil {
+		raw, _ := json.Marshal(strings.TrimSpace(string(message.Content)))
+		return []apicompat.ChatMessage{{Role: role, Content: raw}}
+	}
+
+	var out []apicompat.ChatMessage
+	textParts := make([]string, 0)
+	contentParts := make([]apicompat.ChatContentPart, 0)
+	hasImage := false
+	toolCalls := make([]apicompat.ChatToolCall, 0)
+
+	flushPending := func() {
+		if len(textParts) == 0 && len(contentParts) == 0 && len(toolCalls) == 0 {
+			return
+		}
+		msg := apicompat.ChatMessage{Role: role}
+		if role == "assistant" {
+			raw, _ := json.Marshal(strings.Join(textParts, "\n"))
+			msg.Content = raw
+			msg.ToolCalls = append(msg.ToolCalls, toolCalls...)
+		} else if hasImage {
+			raw, _ := json.Marshal(contentParts)
+			msg.Content = raw
+		} else if len(textParts) > 0 {
+			raw, _ := json.Marshal(strings.Join(textParts, "\n"))
+			msg.Content = raw
+		}
+		out = append(out, msg)
+		textParts = nil
+		contentParts = nil
+		hasImage = false
+		toolCalls = nil
+	}
+
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				textParts = append(textParts, block.Text)
+				if role == "user" {
+					contentParts = append(contentParts, apicompat.ChatContentPart{Type: "text", Text: block.Text})
+				}
+			}
+		case "image":
+			if block.Source != nil && block.Source.Data != "" {
+				hasImage = true
+				contentParts = append(contentParts, apicompat.ChatContentPart{
+					Type: "image_url",
+					ImageURL: &apicompat.ChatImageURL{
+						URL: "data:" + firstNonEmptyString(block.Source.MediaType, "image/png") + ";base64," + block.Source.Data,
+					},
+				})
+			}
+		case "thinking":
+			continue
+		case "tool_use":
+			if role == "assistant" {
+				args := "{}"
+				if len(block.Input) > 0 {
+					args = string(block.Input)
+				}
+				toolCalls = append(toolCalls, apicompat.ChatToolCall{
+					ID:   firstNonEmptyString(block.ID, "call_"+uuid.NewString()),
+					Type: "function",
+					Function: apicompat.ChatFunctionCall{
+						Name:      block.Name,
+						Arguments: args,
+					},
+				})
+			}
+		case "tool_result":
+			content := windsurfAnthropicToolResultMarkup(block.ToolUseID, anthropicToolResultContentText(block.Content))
+			if role == "user" {
+				textParts = append(textParts, content)
+				contentParts = append(contentParts, apicompat.ChatContentPart{Type: "text", Text: content})
+				continue
+			}
+			flushPending()
+			raw, _ := json.Marshal(content)
+			out = append(out, apicompat.ChatMessage{
+				Role:       "tool",
+				ToolCallID: block.ToolUseID,
+				Content:    raw,
+			})
+		}
+	}
+	flushPending()
+	return out
+}
+
+func windsurfAnthropicToolResultMarkup(toolCallID, content string) string {
+	toolCallID = strings.TrimSpace(toolCallID)
+	content = strings.TrimSpace(content)
+
+	var b strings.Builder
+	b.WriteString("<tool_result")
+	if toolCallID != "" {
+		b.WriteString(" tool_call_id=")
+		b.WriteString(strconv.Quote(toolCallID))
+	}
+	b.WriteString(">")
+	if content != "" {
+		b.WriteString("\n")
+		b.WriteString(content)
+		b.WriteString("\n")
+	}
+	b.WriteString("</tool_result>")
+	return b.String()
 }
 
 func parseAnthropicSystemPromptText(raw json.RawMessage) string {
@@ -1099,6 +1749,27 @@ func anthropicMessageContentText(raw json.RawMessage) string {
 		}
 	}
 	return strings.Join(lines, "\n\n")
+}
+
+func anthropicToolResultContentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	var blocks []apicompat.AnthropicContentBlock
+	if json.Unmarshal(raw, &blocks) == nil {
+		lines := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+				lines = append(lines, block.Text)
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 func parseChatMessageContentString(raw json.RawMessage) string {

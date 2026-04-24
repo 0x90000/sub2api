@@ -541,6 +541,10 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
 
 	result, err := executeAdminIdempotent(c, "admin.accounts.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		if err := h.normalizeWindsurfAPIKeyPayload(ctx, req.Platform, req.Type, req.ProxyID, req.Credentials, req.Extra); err != nil {
+			return nil, err
+		}
+
 		account, execErr := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
 			Name:                  req.Name,
 			Notes:                 req.Notes,
@@ -615,6 +619,25 @@ func (h *AccountHandler) Update(c *gin.Context) {
 
 	// 确定是否跳过混合渠道检查
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
+
+	accountBeforeUpdate, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	targetType := accountBeforeUpdate.Type
+	if strings.TrimSpace(req.Type) != "" {
+		targetType = req.Type
+	}
+	effectiveProxyID := req.ProxyID
+	if effectiveProxyID == nil {
+		effectiveProxyID = accountBeforeUpdate.ProxyID
+	}
+	if err := h.normalizeWindsurfAPIKeyPayload(c.Request.Context(), accountBeforeUpdate.Platform, targetType, effectiveProxyID, req.Credentials, req.Extra); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
 	account, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
 		Name:                  req.Name,
@@ -1245,6 +1268,15 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			sanitizeExtraBaseRPM(item.Extra)
 
 			skipCheck := item.ConfirmMixedChannelRisk != nil && *item.ConfirmMixedChannelRisk
+			if err := h.normalizeWindsurfAPIKeyPayload(ctx, item.Platform, item.Type, item.ProxyID, item.Credentials, item.Extra); err != nil {
+				failed++
+				results = append(results, gin.H{
+					"name":    item.Name,
+					"success": false,
+					"error":   err.Error(),
+				})
+				continue
+			}
 
 			account, err := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
 				Name:                  item.Name,
@@ -1389,6 +1421,47 @@ func cloneAccountPayloadMap(src map[string]any) map[string]any {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func (h *AccountHandler) normalizeWindsurfAPIKeyPayload(
+	ctx context.Context,
+	platform string,
+	accountType string,
+	proxyID *int64,
+	credentials map[string]any,
+	extra map[string]any,
+) error {
+	if strings.TrimSpace(platform) != service.PlatformWindsurf || strings.TrimSpace(accountType) != service.AccountTypeAPIKey {
+		return nil
+	}
+	if len(credentials) == 0 {
+		return nil
+	}
+	if h.windsurfOAuthService == nil {
+		return fmt.Errorf("windsurf oauth service not configured")
+	}
+
+	rawToken, _ := credentials["token"].(string)
+	rawToken = strings.TrimSpace(rawToken)
+	if rawToken == "" {
+		return nil
+	}
+
+	tokenInfo, err := h.windsurfOAuthService.ResolveRuntimeToken(ctx, rawToken, proxyID)
+	if err != nil {
+		return err
+	}
+
+	credentials["token"] = tokenInfo.Token
+	if apiServerURL := strings.TrimSpace(tokenInfo.APIServerURL); apiServerURL != "" {
+		credentials["api_server_url"] = apiServerURL
+	}
+	if extra != nil {
+		if displayName := strings.TrimSpace(tokenInfo.DisplayName); displayName != "" {
+			extra["oauth_display_name"] = displayName
+		}
+	}
+	return nil
 }
 
 // BatchUpdateCredentialsRequest represents batch credentials update request
